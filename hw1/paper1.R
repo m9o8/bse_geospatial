@@ -3,11 +3,15 @@ library(sf)
 library(spData)
 library(tidyverse)
 library(geodata)
+library(readxl)
 
-# Load data
+# Load data (paper: https://www.sciencedirect.com/science/article/pii/S0304387818300166#appsec1)
 
-# Dams
-dams <- st_read("hw1/data/doc.kml") # Source:https://www.dws.gov.za/DSO/publications.aspx
+# Dams, Source:https://www.dws.gov.za/DSO/publications.aspx
+dams <- st_read("hw1/data/paper1/Registered Dams Oct2024.kml")
+
+# Dam metadata
+dam_met <- read_excel("hw1/data/paper1/List of Registered Dams Oct2024.xlsx")
 
 # RSA boundaries - downladed from GDAM and temporarily stored
 sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3, path = tempdir()))
