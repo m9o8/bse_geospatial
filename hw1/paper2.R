@@ -31,7 +31,7 @@ wb_data <- read_csv("hw1/data/paper2/pub_eth_householdgeovariables_y1.csv") %>%
   )
 
 # Transform it to GEO data and clip to Ethiopia
-wb_data_geo <- st_as_sf(wb_data, coords = c("LAT_DD_MOD", "LON_DD_MOD"), crs = 4326)
+wb_data_geo <- st_as_sf(wb_data, coords = c("LON_DD_MOD", "LAT_DD_MOD"), crs = 4326)
 wb_data_geo <- st_transform(wb_data_geo, crs(ethiopia_pop))
 
 # Get high voltage power lines with comprehensive voltage range
@@ -84,15 +84,23 @@ ggplot() +
   geom_sf(
     data = hv_lines_clean,
     color = "red",
-    linewidth = 0.1,
-    size = 0.1
+    linewidth = 0.35,
+    size = 0.35
   ) +
   # Add major roads in black
   geom_sf(
     data = roads_clipped,
     color = "black",
     linewidth = 0.5,
-    size = 0.2
+    size = 0.5
+  ) +
+  # Add villages as points
+  geom_sf(
+    data = wb_data_geo,
+    color = "black",
+    size = 1,
+    alpha = 0.6,
+    shape = 16 # solid circle
   ) +
   # Customize the fill scale to match paper's blue shading
   scale_fill_gradientn(
@@ -104,8 +112,8 @@ ggplot() +
   theme_minimal() +
   labs(
     title = "High Voltage Power Grid Network and Major Roads in Ethiopia",
-    subtitle = "Showing transmission lines ≥66kV and population density by district",
-    caption = "Data sources: OpenStreetMap, WorldPop 2020"
+    subtitle = "Showing transmission lines ≥66kV, population density by district, and villages",
+    caption = "Data sources: OpenStreetMap, WorldPop 2020, World Bank"
   ) +
   theme(
     legend.position = "right",
