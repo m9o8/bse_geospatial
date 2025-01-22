@@ -8,12 +8,31 @@ library(readxl)
 # Load data (paper: https://www.sciencedirect.com/science/article/pii/S0304387818300166#appsec1)
 
 # Dams, Source:https://www.dws.gov.za/DSO/publications.aspx
-dams <- st_read("hw1/data/paper1/Registered Dams Oct2024.kml")
+# Data was only available as .KMZ and not readable by st_read so needed to be converted by:
+# https://mygeodata.cloud/converter/kml-to-geojson
+dams <- st_read(
+  "hw1/data/paper1/Registered Dams Oct20241.geojson"
+)
 
 # Dam metadata
-dam_met <- read_excel("hw1/data/paper1/List of Registered Dams Oct2024.xlsx")
+dam_met <- read_excel(
+  "hw1/data/paper1/List of Registered Dams Oct2024.xlsx",
+  col_types = rep("text", ncol(read_excel("hw1/data/paper1/List of Registered Dams Oct2024.xlsx")))
+) %>%
+  mutate(`Completion date` = na_if(as.numeric(`Completion date`), 0))
 
-# RSA boundaries - downladed from GDAM and temporarily stored
+
+# Now filter dams, as done in the paper, i.e, omit missing completion date and filter for irrigation
+dams <- dams %>%
+  left_join(dam_met,
+    by = join_by("COL52A1FC9ABE076254" == "No of dam"),
+    # relationship = "many-to-many"
+  ) %>%
+  filter(!is.na(`Completion date`), str_detect(tolower(Purpose), "irrigation")) %>%
+  distinct(across(-`geometry`), .keep_all = TRUE) # Delete the 2 duplicate cases identified
+
+
+# RSA boundaries - downloaded from GDAM and temporarily stored
 sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3, path = tempdir()))
 
 # River data - Download elevation data for South Africa
