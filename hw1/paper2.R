@@ -78,19 +78,57 @@ eth_districts_sf$pop_density <- eth_districts_sf$total_pop / eth_districts_sf$ar
 
 # Create the final plot
 ggplot() +
-  # Add Ethiopia districts with population density fill
   geom_sf(
     data = eth_districts_sf,
     aes(fill = pop_density),
     color = "gray50",
     linewidth = 0.1
   ) +
-  # Customize the fill scale to match paper's blue shading
   scale_fill_gradientn(
     colors = c("white", "lightblue", "royalblue", "navy"),
     trans = "log",
     name = "Population\nDensity\n(people/km²)",
-    labels = scales::comma
+    labels = scales::comma,
+    guide = guide_colorbar(order = 1)
+  ) +
+  geom_sf(
+    data = roads_clipped,
+    aes(color = "Highway"),
+    linewidth = 0.5
+  ) +
+  geom_sf(
+    data = hv_lines_clean,
+    aes(color = "HV grid"),
+    linewidth = 0.35
+  ) +
+  geom_sf(
+    data = wb_data_geo,
+    aes(shape = "Survey village"),
+    color = "black",
+    size = 1,
+    alpha = 0.6
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Highway" = "black", "HV grid" = "red"),
+    guide = guide_legend(order = 2)
+  ) +
+  scale_shape_manual(
+    name = NULL,
+    values = c("Survey village" = 16),
+    guide = guide_legend(order = 3)
+  ) +
+  guides(
+    fill = guide_colorbar(order = 1),
+    color = guide_legend(
+      order = 2,
+      override.aes = list(
+        linewidth = 1,
+        shape = NA, # Removes the box
+        linetype = 1
+      )
+    ),
+    shape = guide_legend(order = 3)
   ) +
   theme_minimal() +
   labs(
@@ -103,34 +141,7 @@ ggplot() +
     legend.position = "left",
     plot.title = element_text(size = 10),
     plot.subtitle = element_text(size = 8),
-    plot.caption = element_text(size = 6)
-  ) +
-  # Add shape scale for villlage points in legend
-  scale_color_manual(
-    values = c("HV grid" = "red", "Highway" = "black"),
-    name = NULL,
-    guide = guide_legend(order = 2)
-  ) +
-  scale_size_manual(
-    values = c("Survey village" = 1),
-    name = NULL,
-    guide = guide_legend(order = 3)
-  ) +
-  # Add aesthetic mappings in the geom_sf layers:
-  geom_sf(
-    data = hv_lines_clean,
-    aes(color = "HV grid"),
-    linewidth = 0.35
-  ) +
-  geom_sf(
-    data = roads_clipped,
-    aes(color = "Highway"),
-    linewidth = 0.5
-  ) +
-  geom_sf(
-    data = wb_data_geo,
-    aes(size = "Survey village"),
-    color = "black",
-    alpha = 0.6,
-    shape = 16
+    plot.caption = element_text(size = 6),
+    axis.text = element_blank(),
+    axis.title = element_blank()
   )

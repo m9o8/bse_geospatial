@@ -39,6 +39,9 @@ The authors of the paper provide a link to the data, however, the link is unfort
 Moreover, the river gradient data was not directly available, so we use the elevation data from the geodata package to retrieve and later calculate gradients.
 
 ```{r}
+# Set geodata default path
+geodata_path("data/paper1")
+
 # Dams, Source:https://www.dws.gov.za/DSO/publications.aspx
 # Data was only available as .KMZ and not readable by st_read so needed to be converted by:
 # https://mygeodata.cloud/converter/kml-to-geojson
@@ -54,10 +57,10 @@ dam_met <- read_excel(
   mutate(`Completion date` = na_if(as.numeric(`Completion date`), 0))
 
 # RSA boundaries - downloaded from GDAM and temporarily stored
-sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3, path = tempdir()))
+sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3))
 
 # River data - Download elevation data for South Africa
-elevation <- elevation_30s(country = "ZAF", path = tempdir())
+elevation <- elevation_30s(country = "ZAF")
 ```
 
 ### Data wrangling
@@ -175,12 +178,15 @@ In comparison the first paper map looked as follows:
 Unfortunately, again the data was not directly available. Therefore, we leverage some r packages to get the data for highways, powergrids (osmdata) and population data from 2020 (geodata). The ESSR survey data was directly available via the World Bank data repositories as a CSV (2011/12) data used as in the paper. We load all of these in the following:
 
 ```{r}
+# Set geodata default path
+geodata_path("data/paper2")
+
 # Get Ethiopia districts
-eth_districts_sf <- gadm(country = "ETH", level = 3, path = tempdir())
+eth_districts_sf <- gadm(country = "ETH", level = 3)
 eth_districts_sf <- st_as_sf(eth_districts_sf)
 
 # Get population data and process it for Ethiopia
-ethiopia_pop <- population(2020, res = 5, path = tempdir())
+ethiopia_pop <- population(2020, res = 5)
 ethiopia_pop <- crop(ethiopia_pop, ext(eth_districts_sf))
 ethiopia_pop <- mask(ethiopia_pop, vect(eth_districts_sf))
 
@@ -251,61 +257,79 @@ Finally, we output the plot:
 ```{r}
 # Create the final plot
 ggplot() +
-  # Add Ethiopia districts with population density fill
   geom_sf(
     data = eth_districts_sf,
     aes(fill = pop_density),
     color = "gray50",
     linewidth = 0.1
   ) +
-  # Add power lines in red
-  geom_sf(
-    data = hv_lines_clean,
-    color = "red",
-    linewidth = 0.35,
-    size = 0.35
-  ) +
-  # Add major roads in black
-  geom_sf(
-    data = roads_clipped,
-    color = "black",
-    linewidth = 0.5,
-    size = 0.5
-  ) +
-  # Add villages as points
-  geom_sf(
-    data = wb_data_geo,
-    color = "black",
-    size = 1,
-    alpha = 0.6,
-    shape = 16 # solid circle
-  ) +
-  # Customize the fill scale to match paper's blue shading
   scale_fill_gradientn(
     colors = c("white", "lightblue", "royalblue", "navy"),
     trans = "log",
     name = "Population\nDensity\n(people/km²)",
-    labels = scales::comma
+    labels = scales::comma,
+    guide = guide_colorbar(order = 1)
+  ) +
+  geom_sf(
+    data = roads_clipped,
+    aes(color = "Highway"),
+    linewidth = 0.5
+  ) +
+  geom_sf(
+    data = hv_lines_clean,
+    aes(color = "HV grid"),
+    linewidth = 0.35
+  ) +
+  geom_sf(
+    data = wb_data_geo,
+    aes(shape = "Survey village"),
+    color = "black",
+    size = 1,
+    alpha = 0.6
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Highway" = "black", "HV grid" = "red"),
+    guide = guide_legend(order = 2)
+  ) +
+  scale_shape_manual(
+    name = NULL,
+    values = c("Survey village" = 16),
+    guide = guide_legend(order = 3)
+  ) +
+  guides(
+    fill = guide_colorbar(order = 1),
+    color = guide_legend(
+      order = 2,
+      override.aes = list(
+        linewidth = 1,
+        shape = NA, # Removes the box
+        linetype = 1
+      )
+    ),
+    shape = guide_legend(order = 3)
   ) +
   theme_minimal() +
   labs(
     title = "High Voltage Power Grid Network and Major Roads in Ethiopia",
     subtitle = "Showing transmission lines ≥66kV, population density by district, and villages",
-    caption = "Data sources: OpenStreetMap, WorldPop 2020, World Bank\n
-      Source: Based on Fried and Lagakos (2021)"
+    caption = "Data sources: OpenStreetMap, WorldPop 2020, World Bank (2012)\n
+      Based on Fried and Lagakos (2021)"
   ) +
   theme(
-    legend.position = "right",
+    legend.position = "left",
     plot.title = element_text(size = 10),
     plot.subtitle = element_text(size = 8),
-    plot.caption = element_text(size = 6)
+    plot.caption = element_text(size = 6),
+    axis.text = element_blank(),
+    axis.title = element_blank()
   )
 ```
 
 In comparison the second paper map looked as follows: ![Figure 4](data/paper2/1-s2.0-S0166046220303100-gr4.jpg)
 
 
-The different color labelling of the surveyed villages is unfortunately not explained in the paper. Therefore, we leave the points black.
+The different color labeling of the surveyed villages is unfortunately not explained in the paper. Therefore, we leave the points black.
 
 
 ## Paper 3
@@ -337,5 +361,3 @@ In comparison the fourth paper map looked as follows: ![Figure x]()
 ### Plotting
 
 In comparison the fifth paper map looked as follows: ![Figure x]()
-
-
