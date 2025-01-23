@@ -7,6 +7,9 @@ library(readxl)
 
 # Load data (paper: https://www.sciencedirect.com/science/article/pii/S0304387818300166#appsec1)
 
+# Set geodata default path
+geodata_path("hw1/data/paper1")
+
 # Dams, Source:https://www.dws.gov.za/DSO/publications.aspx
 # Data was only available as .KMZ and not readable by st_read so needed to be converted by:
 # https://mygeodata.cloud/converter/kml-to-geojson
@@ -14,12 +17,18 @@ dams <- st_read(
   "hw1/data/paper1/Registered Dams Oct20241.geojson"
 )
 
-# Dam metadata
+# Dam metadata (same source but an Excel file)
 dam_met <- read_excel(
   "hw1/data/paper1/List of Registered Dams Oct2024.xlsx",
   col_types = rep("text", ncol(read_excel("hw1/data/paper1/List of Registered Dams Oct2024.xlsx")))
 ) %>%
   mutate(`Completion date` = na_if(as.numeric(`Completion date`), 0))
+
+# RSA boundaries - downloaded from GDAM and temporarily stored
+sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3))
+
+# River data - Download elevation data for South Africa
+elevation <- elevation_30s(country = "ZAF")
 
 
 # Now filter dams, as done in the paper, i.e, omit missing completion date and filter for irrigation
@@ -32,12 +41,6 @@ dams <- dams %>%
   distinct(across(-`geometry`), .keep_all = TRUE) # Delete the 2 duplicate cases identified
 
 
-# RSA boundaries - downloaded from GDAM and temporarily stored
-sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3, path = tempdir()))
-
-# River data - Download elevation data for South Africa
-elevation <- elevation_30s(country = "ZAF", path = tempdir())
-
 # Convert districts to terra format for raster operations
 districts_vect <- vect(sa_districts_sf)
 
@@ -49,8 +52,6 @@ district_gradients <- terra::extract(slope, districts_vect, fun = mean, na.rm = 
 
 # Add gradient data to districts
 sa_districts_sf$gradient <- district_gradients$slope
-
-# Create plot
 
 # Ensure same CRS
 dams <- st_transform(dams, st_crs(sa_districts_sf))

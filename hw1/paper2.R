@@ -9,12 +9,17 @@ library(ggplot2)
 library(raster)
 library(terra)
 
+# Paper: https://www.sciencedirect.com/science/article/pii/S0166046220303100
+
+# Set geodata default path
+geodata_path("hw1/data/paper2")
+
 # Get Ethiopia districts
-eth_districts_sf <- gadm(country = "ETH", level = 3, path = tempdir())
+eth_districts_sf <- gadm(country = "ETH", level = 3)
 eth_districts_sf <- st_as_sf(eth_districts_sf)
 
 # Get population data and process it for Ethiopia
-ethiopia_pop <- population(2020, res = 5, path = tempdir())
+ethiopia_pop <- population(2020, res = 5)
 ethiopia_pop <- crop(ethiopia_pop, ext(eth_districts_sf))
 ethiopia_pop <- mask(ethiopia_pop, vect(eth_districts_sf))
 
@@ -80,28 +85,6 @@ ggplot() +
     color = "gray50",
     linewidth = 0.1
   ) +
-  # Add power lines in red
-  geom_sf(
-    data = hv_lines_clean,
-    color = "red",
-    linewidth = 0.35,
-    size = 0.35
-  ) +
-  # Add major roads in black
-  geom_sf(
-    data = roads_clipped,
-    color = "black",
-    linewidth = 0.5,
-    size = 0.5
-  ) +
-  # Add villages as points
-  geom_sf(
-    data = wb_data_geo,
-    color = "black",
-    size = 1,
-    alpha = 0.6,
-    shape = 16 # solid circle
-  ) +
   # Customize the fill scale to match paper's blue shading
   scale_fill_gradientn(
     colors = c("white", "lightblue", "royalblue", "navy"),
@@ -113,11 +96,41 @@ ggplot() +
   labs(
     title = "High Voltage Power Grid Network and Major Roads in Ethiopia",
     subtitle = "Showing transmission lines ≥66kV, population density by district, and villages",
-    caption = "Data sources: OpenStreetMap, WorldPop 2020, World Bank"
+    caption = "Data sources: OpenStreetMap, WorldPop 2020, World Bank\n
+      Source: Based on Fried and Lagakos (2021)"
   ) +
   theme(
-    legend.position = "right",
+    legend.position = "left",
     plot.title = element_text(size = 10),
     plot.subtitle = element_text(size = 8),
     plot.caption = element_text(size = 6)
+  ) +
+  # Add shape scale for villlage points in legend
+  scale_color_manual(
+    values = c("HV grid" = "red", "Highway" = "black"),
+    name = NULL,
+    guide = guide_legend(order = 2)
+  ) +
+  scale_size_manual(
+    values = c("Survey village" = 1),
+    name = NULL,
+    guide = guide_legend(order = 3)
+  ) +
+  # Add aesthetic mappings in the geom_sf layers:
+  geom_sf(
+    data = hv_lines_clean,
+    aes(color = "HV grid"),
+    linewidth = 0.35
+  ) +
+  geom_sf(
+    data = roads_clipped,
+    aes(color = "Highway"),
+    linewidth = 0.5
+  ) +
+  geom_sf(
+    data = wb_data_geo,
+    aes(size = "Survey village"),
+    color = "black",
+    alpha = 0.6,
+    shape = 16
   )
