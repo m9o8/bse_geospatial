@@ -8,7 +8,7 @@ library(readxl)
 library(tidyr)
 
 # Read the .xls file with the Brasilian population for 2009  
-df <- read_excel("data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
+df <- read_excel("hw1/data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
 df
 
 # Get the geographical data from the package geobr

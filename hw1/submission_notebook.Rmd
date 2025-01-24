@@ -7,7 +7,7 @@ output:
     toc: true
 ---
 
-```{r setup, include=FALSE} 
+```{r setup, include=FALSE}
 # Disable warning messages
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 ```
@@ -328,13 +328,13 @@ ggplot() +
 
 In comparison the second paper map looked as follows: ![Figure 4](data/paper2/1-s2.0-S0166046220303100-gr4.jpg)
 
-
 The different color labeling of the surveyed villages is unfortunately not explained in the paper. Therefore, we leave the points black.
-
 
 ## Paper 3
 
 ### Data loading
+
+
 
 ### Data wrangling
 
