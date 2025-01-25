@@ -334,11 +334,73 @@ The different color labeling of the surveyed villages is unfortunately not expla
 
 ### Data loading
 
+The authors of the paper do not provide a direct link to the data, but they refer to the Brazilian Statistical Bureau (IBGE) when introducing the "meso-regions," which are the political boundaries used in their plots.
 
+We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors reproduced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year. Specifically, on the IBGE website, we found data for 2009. However, we assume no significant variations in population occurred within a single year, allowing us to proceed with our analysis. For consistency, also the geographical data are referred to 2009.
+
+```{r}
+# Read the .xls file with the Brasilian population for 2009  
+df <- read_excel("hw1/data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
+
+# Get the geographical data from the package geobr
+state <- read_state(year=2009)
+meso <- read_meso_region(year=2009)
+```
 
 ### Data wrangling
 
+From the package geobr, data at the meso-regions level are available, but they have a different level of granularity compared to the population data. This discrepancy can be easily verified by comparing the number of observations in the two datasets. Due to this inconsistency between the geographical data and the population data, we could not exactly replicate the authors' plots, which show the Brazilian population shares for meso-regions. Instead, we had to perform the analysis at the state level.
+
+First, we grouped the population data by state to ensure that both datasets referred to the same political boundaries. Next, we joined the two datasets based on the state code. After this, we created a column indicating the population share, multiplying the ratio by 100 to make the results more consistent with the paper. Finally, we filtered the data for the North and Central-West regions to highlight the borders in the plot. 
+
+```{r}
+# Convert ESTIMADA (=population) into a numerical variable and # handle missing values by setting them to 0
+df <- df %>%
+  mutate(ESTIMADA = as.numeric(ESTIMADA)) %>%
+  mutate(ESTIMADA = replace_na(ESTIMADA, 0))
+
+# Group by the state code 
+df_grouped <- df %>% 
+  group_by(COD...2) %>%
+  summarise(
+    Total_Estimada = sum(ESTIMADA, na.rm = TRUE),  
+    Count = n()  
+  )
+
+# Remove the last row of df_merged - in df the last row was the # total and it would have been considered another meso region
+df_grouped <- df_grouped %>% 
+  slice(-n())
+
+# Merge the geographical data with the population data 
+df_merged <- state %>%
+  left_join(df_grouped, by = c("code_state" = "COD...2"))
+
+# Create the column pop_share
+df_merged <- df_merged %>%
+  mutate(pop_share = Total_Estimada / sum(Total_Estimada)*100) 
+
+# Filter for North and Central-West regions
+regions_to_highlight <- df_merged %>%
+  filter(name_region %in% c("Centro Oeste", "Norte"))
+
+# Join the geometries of these regions in a polygon 
+regions_union <- regions_to_highlight %>%
+  st_union() %>% 
+  st_as_sf()
+```
+
+
 ### Plotting
+
+```{r}
+ggplot(data = df_merged) +
+  geom_sf(aes(fill = pop_share), color = "white") +
+  scale_fill_gradientn(
+    colors = c("lightblue", "blue", "darkblue"),
+    name = "Pop. Share",
+    limits = c(0, 25)) +
+  geom_sf(data = regions_union, fill = NA, color = "red", linewidth = 1)
+```
 
 In comparison the third paper map looked as follows: ![Figure x]()
 

@@ -12,7 +12,8 @@ library(lwgeom)
 df <- read_excel("hw1/data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
 
 # Get the geographical data from the package geobr
-state <- read_state(year=2010)
+state <- read_state(year=2009)
+meso <- read_meso_region(year=2009)
 
 # Convert ESTIMADA (=population) into a numerical variable and handle missing values 
 # by setting them to 0
