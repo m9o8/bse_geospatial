@@ -338,6 +338,9 @@ The authors of the paper do not provide a direct link to the data, but they refe
 
 We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors reproduced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year. Specifically, on the IBGE website, we found data for 2009. However, we assume no significant variations in population occurred within a single year, allowing us to proceed with our analysis.
 
+Additionally, we explored the R package censobr, which is expected to contain Brazil's census data for earlier years. Unfortunately, despite using the function data_dictionary and experimenting with various arguments (e.g., "population," "households," etc.), we were unable to retrieve population data. Instead, the package provided other types of data that were not relevant to our analysis.
+
+
 ```{r}
 # Read the .xls file with the Brasilian population for 2009  
 df <- read_excel("hw1/data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
