@@ -28,6 +28,8 @@ library(readxl)
 library(ggplot2)
 library(raster)
 library(terra)
+library(lwgeom)
+library(geobr)
 ```
 
 ## [Paper 1](https://www.sciencedirect.com/science/article/pii/S0304387818300166#appsec1)
@@ -330,7 +332,7 @@ In comparison the second paper map looked as follows: ![Figure 4](data/paper2/1-
 
 The different color labeling of the surveyed villages is unfortunately not explained in the paper. Therefore, we leave the points black.
 
-## Paper 3
+## [Paper 3](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3776990)
 
 ### Data loading
 
@@ -339,12 +341,13 @@ The authors of the paper do not provide a direct link to the data, but they refe
 We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors reproduced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year. Specifically, on the IBGE website, we found data for 2009. However, we assume no significant variations in population occurred within a single year, allowing us to proceed with our analysis.
 
 ```{r}
-# Read the .xls file with the Brasilian population for 2009  
-df <- read_excel("hw1/data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
+# Read the .xls file with the Brasilian population for 2009
+df <- read_excel("data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
 
 # Get the geographical data from the package geobr
-state <- read_state(year=2010)
-meso <- read_meso_region(year=2010)
+state <- read_state(year = 2010)
+meso <- read_meso_region(year = 2010)
+region <- read_region(year = 2010)
 ```
 
 ### Data wrangling
@@ -359,50 +362,62 @@ df <- df %>%
   mutate(ESTIMADA = as.numeric(ESTIMADA)) %>%
   mutate(ESTIMADA = replace_na(ESTIMADA, 0))
 
-# Group by the state code 
-df_grouped <- df %>% 
+# Group by the state code
+df_grouped <- df %>%
   group_by(COD...2) %>%
   summarise(
-    Total_Estimada = sum(ESTIMADA, na.rm = TRUE),  
-    Count = n()  
+    Total_Estimada = sum(ESTIMADA, na.rm = TRUE),
+    Count = n()
   )
 
 # Remove the last row of df_merged - in df the last row was the # total and it would have been considered another meso region
-df_grouped <- df_grouped %>% 
+df_grouped <- df_grouped %>%
   slice(-n())
 
-# Merge the geographical data with the population data 
+# Merge the geographical data with the population data
 df_merged <- state %>%
   left_join(df_grouped, by = c("code_state" = "COD...2"))
 
 # Create the column pop_share
 df_merged <- df_merged %>%
-  mutate(pop_share = Total_Estimada / sum(Total_Estimada)*100) 
+  mutate(pop_share = Total_Estimada / sum(Total_Estimada) * 100)
 
-# Filter for North and Central-West regions
-regions_to_highlight <- df_merged %>%
-  filter(name_region %in% c("Centro Oeste", "Norte"))
-
-# Join the geometries of these regions in a polygon 
-regions_union <- regions_to_highlight %>%
-  st_union() %>% 
-  st_as_sf()
+# Aggregate regions as the author's did to get the correct boundaries
+region <- region %>%
+  mutate(
+    name_region = case_when(
+      name_region %in% c("Centro Oeste", "Norte") ~ 2,
+      TRUE ~ 1
+    )
+  ) %>%
+  dplyr::select(name_region, geom) %>%
+  group_by(name_region) %>%
+  summarise(geom = st_union(geom)) %>%
+  sfheaders::sf_remove_holes()
 ```
 
 
 ### Plotting
 
 ```{r}
+# Final plot
 ggplot(data = df_merged) +
+  ggtitle("(c) 2010") +
+  theme(plot.title = element_text(hjust = 0.5)) +
   geom_sf(aes(fill = pop_share), color = "white") +
   scale_fill_gradientn(
     colors = c("lightblue", "blue", "darkblue"),
     name = "Pop. Share",
-    limits = c(0, 25)) +
-  geom_sf(data = regions_union, fill = NA, color = "red", linewidth = 1)
+    limits = c(0, 25)
+  ) +
+  geom_sf(data = region, aes(color = factor(name_region)), fill = NA, linewidth = 1) +
+  scale_color_manual(values = c("black", "red")) +
+  guides(color = "none")
 ```
 
 In comparison the third paper map looked as follows: ![Figure 4](data/paper3/original_plot.png)
+
+Again, as outlined above, we only replicate the 2010 map, due to data non-availability in the prior periods.
 
 ## Paper 4
 
