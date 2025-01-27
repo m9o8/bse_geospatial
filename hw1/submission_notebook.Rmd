@@ -1,5 +1,9 @@
 ---
-title: "Geospatial - Assignment 1 - Moritz Peist, Noemi Lucchi, Simon Vellin"
+title: "Geospatial - Assignment 1"
+author: 
+- Moritz Peist
+- Noemi Lucchi
+- Simon Vellin
 output:
   html_document:
     toc: true
@@ -14,7 +18,7 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 
 # Methodology & general code
 
-In the following notebook we replicate the charts for all 5 papers. Contentwise, the code follows always the same structure. We first load the data, then we create the chart and finally we save the chart as a .png file.
+In the following notebook we replicate the charts for all 5 papers. Contentwise, the code follows always the same structure. We first load the data, then we create the chart and finally display it.
 
 First we load the needed packages:
 
@@ -58,7 +62,7 @@ dam_met <- read_excel(
 ) %>%
   mutate(`Completion date` = na_if(as.numeric(`Completion date`), 0))
 
-# RSA boundaries - downloaded from GDAM and temporarily stored
+# RSA boundaries - downloaded from GDAM
 sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3))
 
 # River data - Download elevation data for South Africa
@@ -328,7 +332,8 @@ ggplot() +
   )
 ```
 
-In comparison the second paper map looked as follows: ![Figure 4](data/paper2/1-s2.0-S0166046220303100-gr4.jpg)
+In comparison the second paper map looked as follows: 
+![Figure 4](data/paper2/1-s2.0-S0166046220303100-gr4.jpg)
 
 The different color labeling of the surveyed villages is unfortunately not explained in the paper. Therefore, we leave the points black.
 
@@ -418,7 +423,9 @@ ggplot(data = df_merged) +
   guides(color = "none")
 ```
 
-In comparison the third paper map looked as follows: ![Figure 4](data/paper3/original_plot.png)
+In comparison the third paper map looked as follows:
+
+![Figure 4](data/paper3/original_plot.png)
 
 Again, as outlined above, we only replicate the 2010 map, due to data non-availability in the prior periods.
 
@@ -430,7 +437,9 @@ Again, as outlined above, we only replicate the 2010 map, due to data non-availa
 
 ### Plotting
 
-In comparison the fourth paper map looked as follows: ![Figure x]()
+In comparison the fourth paper map looked as follows: 
+
+![Figure x]()
 
 ## Paper 5
 
@@ -440,4 +449,6 @@ In comparison the fourth paper map looked as follows: ![Figure x]()
 
 ### Plotting
 
-In comparison the fifth paper map looked as follows: ![Figure x]()
+In comparison the fifth paper map looked as follows: 
+
+![Figure x]()
