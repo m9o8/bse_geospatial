@@ -1,45 +1,54 @@
 library(sf)
 library(geobr)
-library(dplyr)
+library(tidyverse)
 library(ggplot2)
 library(readxl)
-library(tidyr)
 library(lwgeom)
+library(censobr)
 
-# Read the .xls file with the Brasilian population for 2009
-df <- read_excel("hw1/data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
-
-# Get the geographical data from the package geobr
-state <- read_state(year = 2010)
-meso <- read_meso_region(year = 2010)
-region <- read_region(year = 2010)
-
-# Convert ESTIMADA (=population) into a numerical variable and handle missing values
-# by setting them to 0
-df <- df %>%
-  mutate(ESTIMADA = as.numeric(ESTIMADA)) %>%
-  mutate(ESTIMADA = replace_na(ESTIMADA, 0))
-
-# Group by the country code
-df_grouped <- df %>%
-  group_by(COD...2) %>%
+# Read in the Brasilian population for 2010 using the censobr package
+# This also contains 1980, and 1960 data, but 1980 without weights, and 1960 only partially
+pop_2010 <- read_population(
+  year = 2010,
+  columns = c("code_state", "code_region", "code_muni", "V0010"),
+  showProgress = FALSE,
+  as_data_frame = TRUE,
+  # cache = FALSE
+) %>% # Group by municipality code
+  group_by(code_muni) %>%
   summarise(
-    Total_Estimada = sum(ESTIMADA, na.rm = TRUE),
-    Count = n()
+    total_population = sum(V0010, rm.na = TRUE)
   )
 
-# Remove the last row of df_merged - in df the last row was the total
-# and it would have been considered another meso region
-df_grouped <- df_grouped %>%
-  slice(-n())
+# Get the geographical data from the package geobr and validate if necessary
+meso <- read_meso_region(year = 2010) %>%
+  st_make_valid()
+region <- read_region(year = 2010)
+muni <- read_municipality(year = 2010) %>%
+  st_make_valid()
 
-# Merge the geographical data with the population data
-df_merged <- state %>%
-  left_join(df_grouped, by = c("code_state" = "COD...2"))
+# First, join the population data with municipal boundaries
+pop_spatial <- muni %>%
+  left_join(pop_2010, by = "code_muni")
 
-# Create the column pop_share
-df_merged <- df_merged %>%
-  mutate(pop_share = Total_Estimada / sum(Total_Estimada) * 100)
+# Use st_centroid to ensure each municipality is counted only once
+pop_meso <- pop_spatial %>%
+  st_centroid() %>% # Convert polygons to points
+  st_join(meso) %>% # Join with meso regions
+  group_by(code_meso) %>%
+  summarise(
+    total_population = sum(total_population, na.rm = TRUE)
+  ) %>%
+  st_drop_geometry() # Remove geometry before joining back
+
+# Now join back with meso geometries
+pop_meso <- meso %>%
+  left_join(pop_meso, by = "code_meso")
+
+# Create pop_share
+df_merged <- pop_meso %>%
+  mutate(pop_share = total_population / sum(total_population) * 100)
+
 
 # Aggregate regions as the author's did to get the correct boundaries
 region <- region %>%
@@ -56,12 +65,26 @@ region <- region %>%
 
 # Final plot
 ggplot(data = df_merged) +
-  geom_sf(aes(fill = pop_share), color = "white") +
-  scale_fill_gradientn(
-    colors = c("lightblue", "blue", "darkblue"),
+  ggtitle("(c) 2010") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5), # Center title while keeping minimal theme
+    panel.grid = element_line(color = "gray90"), # Make grid lines lighter
+    axis.text = element_blank(),
+    axis.ticks = element_blank()
+  ) +
+  geom_sf(aes(fill = pop_share), color = "white", size = 0.1) +
+  scale_fill_stepsn(
     name = "Pop. Share",
-    limits = c(0, 25)
+    breaks = c(0, 0.216, 0.382, 0.557, 1.02, 11.12),
+    labels = scales::number_format(accuracy = 0.001),
+    colors = c("#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"), # Made lower values darker
+    values = scales::rescale(c(0, 0.216, 0.382, 0.557, 1.02, 11.12))
   ) +
   geom_sf(data = region, aes(color = factor(name_region)), fill = NA, linewidth = 1) +
   scale_color_manual(values = c("black", "red")) +
-  guides(color = "none")
+  guides(color = "none") +
+  # Add titles
+  labs(
+    caption = "Source: Based on Pellegrina and Sotelo (2021)"
+  )

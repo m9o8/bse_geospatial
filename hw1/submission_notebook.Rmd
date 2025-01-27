@@ -11,10 +11,36 @@ output:
     toc: true
 ---
 
+<hr>
+
+```{css, echo=FALSE}
+h1.title {
+  text-align: center;
+}
+
+h4.author, h4.date {
+  text-align: center;
+}
+
+.author {
+  text-align: center;
+}
+
+.date {
+  text-align: center;
+}
+```
+
 ```{r setup, include=FALSE}
 # Disable warning messages
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 ```
+
+<div style="text-align: center;">
+  <img src="Barcelona_School_of_Economics_logo.svg" alt="BSE logo">
+</div>
+
+<hr>
 
 # Methodology & general code
 
@@ -23,24 +49,30 @@ In the following notebook we replicate the charts for all 5 papers. Contentwise,
 First we load the needed packages:
 
 ```{r}
-library(osmdata)
-library(sf)
-library(spData)
+# Main tidyverse (includes ggplot2)
 library(tidyverse)
-library(geodata)
-library(readxl)
-library(ggplot2)
-library(raster)
-library(terra)
-library(lwgeom)
-library(geobr)
+
+# Spatial packages
+library(sf)
+library(terra) # Newer replacement for raster
+library(osmdata) # OpenStreetMap data
+library(spData) # Spatial data
+library(geobr) # Brazilian boundaries
+library(censobr) # Brazilian population data
+library(lwgeom) # Needed for st_make_valid
+
+# Data import
+library(geodata) # For elevation data
+library(readxl) # For Excel files
 ```
 
-## [Paper 1](https://www.sciencedirect.com/science/article/pii/S0304387818300166#appsec1)
+<hr>
 
-### Data loading
+# [Paper 1](https://www.sciencedirect.com/science/article/pii/S0304387818300166#appsec1)
 
-The authors of the paper provide a link to the data, however, the link is unfortunately outdated. Yet, the data is available in a newer version on the website (authors used 2013 data, we use 2024 data).
+## Data loading
+
+The authors of the paper provide a link to the data, however, the link is unfortunately outdated. Yet, the data is available in a newer version on the [website](https://www.dws.gov.za/DSO/publications.aspx) (authors used 2013 data, we use 2024 data) but had to be converted to geojson format before usage.
 
 Moreover, the river gradient data was not directly available, so we use the elevation data from the geodata package to retrieve and later calculate gradients.
 
@@ -69,7 +101,7 @@ sa_districts_sf <- st_as_sf(gadm(country = "ZAF", level = 3))
 elevation <- elevation_30s(country = "ZAF")
 ```
 
-### Data wrangling
+## Data wrangling
 
 We try to apply the same data cleaning as the authors though we deal with more recent data, i.e.:
 
@@ -107,7 +139,7 @@ sa_boundary <- st_union(sa_districts_sf)
 dams_clipped <- st_intersection(dams, sa_boundary)
 ```
 
-### Plotting
+## Plotting
 
 Finally, we output the plot:
 
@@ -177,11 +209,13 @@ In comparison the first paper map looked as follows:
 
 ![Figure 2](data/paper1/1-s2.0-S0304387818300166-gr2.jpg)
 
-## [Paper 2](https://www.sciencedirect.com/science/article/pii/S0166046220303100)
+<hr>
 
-### Data loading
+# [Paper 2](https://www.sciencedirect.com/science/article/pii/S0166046220303100)
 
-Unfortunately, again the data was not directly available. Therefore, we leverage some r packages to get the data for highways, powergrids (osmdata) and population data from 2020 (geodata). The ESSR survey data was directly available via the World Bank data repositories as a CSV (2011/12) data used as in the paper. We load all of these in the following:
+## Data loading
+
+Unfortunately, again the data was not directly available. Therefore, we leverage some r packages to get the data for highways, powergrids (osmdata) and population data from 2020 (geodata). The [ERSS survey](https://microdata.worldbank.org/index.php/catalog/2053/data-dictionary) data was directly available via the World Bank data repositories as a CSV (2011/12) data used as in the paper. We load all of these in the following:
 
 ```{r}
 # Set geodata default path
@@ -234,9 +268,9 @@ ethiopia_roads <- opq("Ethiopia") %>%
   osmdata_sf()
 ```
 
-### Data wrangling
+## Data wrangling
 
-We calculate the population density for each district and clip the roads to the Ethiopia boundary.
+We calculate the population density for each district and clip the roads to the Ethiopia boundary. Furthermore, t looks like the authors used slightly different road and powergrid networks. However, overall the grids look broadly similar when utilizing OpenStreetMap data. 
 
 ```{r}
 # Clip roads to Ethiopia boundary
@@ -256,7 +290,7 @@ eth_districts_sf$area_km2 <- as.numeric(st_area(eth_districts_sf)) / 1000000
 eth_districts_sf$pop_density <- eth_districts_sf$total_pop / eth_districts_sf$area_km2
 ```
 
-### Plotting
+## Plotting
 
 Finally, we output the plot:
 
@@ -337,58 +371,68 @@ In comparison the second paper map looked as follows:
 
 The different color labeling of the surveyed villages is unfortunately not explained in the paper. Therefore, we leave the points black.
 
-## [Paper 3](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3776990)
+<hr>
 
-### Data loading
+# [Paper 3](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3776990)
+
+## Data loading
 
 The authors of the paper do not provide a direct link to the data, but they refer to the Brazilian Statistical Bureau (IBGE) when introducing the "meso-regions," which are the political boundaries used in their plots.
 
-We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors reproduced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year. Specifically, on the IBGE website, we found data for 2009. However, we assume no significant variations in population occurred within a single year, allowing us to proceed with our analysis.
+We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors reproduced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year, i.e., 2010. Specifically, on the IBGE website, we found data for 2009, and the censobr package provides the 2010 data. It also provides census data for 1980 and 1960, but in 1980, it seems the population weights are missing. Therefore, we decided to focus on the 2010 data.
 
-Additionally, we explored the R package censobr, which is expected to contain Brazil's census data for earlier years. Unfortunately, despite using the function data_dictionary and experimenting with various arguments (e.g., "population," "households," etc.), we were unable to retrieve population data. Instead, the package provided other types of data that were not relevant to our analysis.
+For geographical boundaries of Brazil for administrative areas, we use the geobr package.
 
-
-```{r}
-# Read the .xls file with the Brasilian population for 2009
-df <- read_excel("data/paper3/UF_Municipio.xls", skip = 4, col_names = TRUE)
-
-# Get the geographical data from the package geobr
-state <- read_state(year = 2010)
-meso <- read_meso_region(year = 2010)
-region <- read_region(year = 2010)
-```
-
-### Data wrangling
-
-From the package geobr, data at the meso-regions level are available, but they have a different level of granularity compared to the population data. This discrepancy can be easily verified by comparing the number of observations in the two datasets. Due to this inconsistency between the geographical data and the population data, we could not exactly replicate the authors' plots, which show the Brazilian population shares for meso-regions. Instead, we had to perform the analysis at the state level.
-
-First, we grouped the population data by state to ensure that both datasets referred to the same political boundaries. Next, we joined the two datasets based on the state code. After this, we created a column indicating the population share, multiplying the ratio by 100 to make the results more consistent with the paper. Finally, we filtered the data for the North and Central-West regions to highlight the borders in the plot. 
 
 ```{r}
-# Convert ESTIMADA (=population) into a numerical variable and # handle missing values by setting them to 0
-df <- df %>%
-  mutate(ESTIMADA = as.numeric(ESTIMADA)) %>%
-  mutate(ESTIMADA = replace_na(ESTIMADA, 0))
-
-# Group by the state code
-df_grouped <- df %>%
-  group_by(COD...2) %>%
+# Read in the Brasilian population for 2010 using the censobr package
+# This also contains 1980, and 1960 data, but 1980 without weights, and 1960 only partially
+pop_2010 <- censobr::read_population(
+  year = 2010,
+  columns = c("code_state", "code_region", "code_muni", "V0010"),
+  showProgress = FALSE,
+  as_data_frame = TRUE,
+  # cache = FALSE
+) %>% # Group by municipality code
+  group_by(code_muni) %>%
   summarise(
-    Total_Estimada = sum(ESTIMADA, na.rm = TRUE),
-    Count = n()
+    total_population = sum(V0010, rm.na = TRUE)
   )
 
-# Remove the last row of df_merged - in df the last row was the # total and it would have been considered another meso region
-df_grouped <- df_grouped %>%
-  slice(-n())
+# Get the geographical data from the package geobr and validate if necessary
+meso <- read_meso_region(year = 2010) %>%
+  st_make_valid()
+region <- read_region(year = 2010)
+muni <- read_municipality(year = 2010) %>%
+  st_make_valid()
+```
 
-# Merge the geographical data with the population data
-df_merged <- state %>%
-  left_join(df_grouped, by = c("code_state" = "COD...2"))
+## Data wrangling
 
-# Create the column pop_share
-df_merged <- df_merged %>%
-  mutate(pop_share = Total_Estimada / sum(Total_Estimada) * 100)
+First, we grouped the population data by state to ensure that both datasets referred to the same political boundaries. Next, we joined the two datasets based on the meso code. We had to take a rather coarse-granular approach by using the `st_centroid()` function to match meso-regions with municipalities. this leads us to loosing out roughly on 50'000 inhabitants. After this, we created a column indicating the population share, multiplying the ratio by 100 to make the results more consistent with the paper. Finally, we filtered the data for the North and Central-West regions to highlight the borders in the plot. Needing `sf_remove_holes()` to avoid inner borders, we loose a bit of granularity in the outer borders of the broader regions.
+
+```{r}
+# First, join the population data with municipal boundaries
+pop_spatial <- muni %>%
+  left_join(pop_2010, by = "code_muni")
+
+# Use st_centroid to ensure each municipality is counted only once
+pop_meso <- pop_spatial %>%
+  st_centroid() %>% # Convert polygons to points
+  st_join(meso) %>% # Join with meso regions
+  group_by(code_meso) %>%
+  summarise(
+    total_population = sum(total_population, na.rm = TRUE)
+  ) %>%
+  st_drop_geometry() # Remove geometry before joining back
+
+# Now join back with meso geometries
+pop_meso <- meso %>%
+  left_join(pop_meso, by = "code_meso")
+
+# Create pop_share
+df_merged <- pop_meso %>%
+  mutate(pop_share = total_population / sum(total_population) * 100)
 
 # Aggregate regions as the author's did to get the correct boundaries
 region <- region %>%
@@ -405,49 +449,64 @@ region <- region %>%
 ```
 
 
-### Plotting
+## Plotting
 
 ```{r}
-# Final plot
 ggplot(data = df_merged) +
   ggtitle("(c) 2010") +
-  theme(plot.title = element_text(hjust = 0.5)) +
-  geom_sf(aes(fill = pop_share), color = "white") +
-  scale_fill_gradientn(
-    colors = c("lightblue", "blue", "darkblue"),
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5), # Center title while keeping minimal theme
+    panel.grid = element_line(color = "gray90"), # Make grid lines lighter
+    axis.text = element_blank(),
+    axis.ticks = element_blank()
+  ) +
+  geom_sf(aes(fill = pop_share), color = "white", size = 0.1) +
+  scale_fill_stepsn(
     name = "Pop. Share",
-    limits = c(0, 25)
+    breaks = c(0, 0.216, 0.382, 0.557, 1.02, 11.12),
+    labels = scales::number_format(accuracy = 0.001),
+    colors = c("#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"), # Made lower values darker
+    values = scales::rescale(c(0, 0.216, 0.382, 0.557, 1.02, 11.12))
   ) +
   geom_sf(data = region, aes(color = factor(name_region)), fill = NA, linewidth = 1) +
   scale_color_manual(values = c("black", "red")) +
-  guides(color = "none")
+  guides(color = "none") +
+  # Add titles
+  labs(
+    caption = "Source: Based on Pellegrina and Sotelo (2021)"
+  )
 ```
 
 In comparison the third paper map looked as follows:
 
 ![Figure 4](data/paper3/original_plot.png)
 
-Again, as outlined above, we only replicate the 2010 map, due to data non-availability in the prior periods.
+Again, as outlined above, we only replicate the 2010 map, due to data issues in the prior periods.
 
-## Paper 4
+<hr>
 
-### Data loading
+# Paper 4
 
-### Data wrangling
+## Data loading
 
-### Plotting
+## Data wrangling
+
+## Plotting
 
 In comparison the fourth paper map looked as follows: 
 
 ![Figure x]()
 
-## Paper 5
+<hr>
 
-### Data loading
+# Paper 5
 
-### Data wrangling
+## Data loading
 
-### Plotting
+## Data wrangling
+
+## Plotting
 
 In comparison the fifth paper map looked as follows: 
 
