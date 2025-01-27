@@ -402,7 +402,7 @@ ggplot(data = df_merged) +
   geom_sf(data = regions_union, fill = NA, color = "red", linewidth = 1)
 ```
 
-In comparison the third paper map looked as follows: ![Figure x]()
+In comparison the third paper map looked as follows: ![Figure 4](data/paper3/original_plot.png)
 
 ## Paper 4
 
