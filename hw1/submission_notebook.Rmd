@@ -379,7 +379,7 @@ The different color labeling of the surveyed villages is unfortunately not expla
 
 The authors of the paper do not provide a direct link to the data, but they refer to the Brazilian Statistical Bureau (IBGE) when introducing the "meso-regions," which are the political boundaries used in their plots.
 
-We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors reproduced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year, i.e., 2010. Specifically, on the IBGE website, we found data for 2009, and the censobr package provides the 2010 data. It also provides census data for 1980 and 1960, but in 1980, it seems the population weights are missing. Therefore, we decided to focus on the 2010 data.
+We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors produced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year, i.e., 2010 and with flaws for 1960 (i.e., we're missing around 13 mln people of the overall population in 1960 due to data compilation issues of the earlier census approaches of the IBGE - [see here](https://ipeagit.github.io/censobr/reference/read_population.html#-census) for more information). Specifically, on the IBGE website, we found data for 2009, and the censobr package provides the 2010 data. It also provides census data for 1980 and 1960, but in 1980, it seems the population weights are missing. Therefore, we decided to focus on the 2010 and 1960 data.
 
 For geographical boundaries of Brazil for administrative areas, we use the geobr package.
 
@@ -387,7 +387,7 @@ For geographical boundaries of Brazil for administrative areas, we use the geobr
 ```{r}
 # Read in the Brasilian population for 2010 using the censobr package
 # This also contains 1980, and 1960 data, but 1980 without weights, and 1960 only partially
-pop_2010 <- censobr::read_population(
+pop_2010 <- read_population(
   year = 2010,
   columns = c("code_state", "code_region", "code_muni", "V0010"),
   showProgress = FALSE,
@@ -396,7 +396,21 @@ pop_2010 <- censobr::read_population(
 ) %>% # Group by municipality code
   group_by(code_muni) %>%
   summarise(
-    total_population = sum(V0010, rm.na = TRUE)
+    total_population_2010 = sum(V0010, rm.na = TRUE)
+  )
+
+# Get 1960 data (which is missing approx 13 mln people though -
+# it's only a rough estimate and combined from 2 datasets, see censobr description)
+pop_1960 <- read_population(
+  year = 1960,
+  columns = c("code_muni_1960", "censobr_weight"),
+  showProgress = FALSE,
+  as_data_frame = TRUE,
+  # cache = FALSE
+) %>% # Group by municipality code
+  group_by(code_muni_1960) %>%
+  summarise(
+    total_population_1960 = sum(censobr_weight, rm.na = TRUE)
   )
 
 # Get the geographical data from the package geobr and validate if necessary
@@ -409,12 +423,13 @@ muni <- read_municipality(year = 2010) %>%
 
 ## Data wrangling
 
-First, we grouped the population data by state to ensure that both datasets referred to the same political boundaries. Next, we joined the two datasets based on the meso code. We had to take a rather coarse-granular approach by using the `st_centroid()` function to match meso-regions with municipalities. this leads us to loosing out roughly on 50'000 inhabitants. After this, we created a column indicating the population share, multiplying the ratio by 100 to make the results more consistent with the paper. Finally, we filtered the data for the North and Central-West regions to highlight the borders in the plot. Needing `sf_remove_holes()` to avoid inner borders, we loose a bit of granularity in the outer borders of the broader regions.
+First, we join the 1960 and 2010 population data with munipalicity level data  to ensure that both datasets refer to the same political boundaries. Next, we joined the two datasets based with the meso code and group on meso level to get the wanted granularity. We had to take a rather coarse-granular approach by using the `st_centroid()` function to match meso-regions with municipalities. This leads us to loosing out roughly on 50'000 inhabitants in 2010. After this, we created a column indicating the population share, multiplying the ratio by 100 to make the results more consistent with the paper. Finally, we filtered the data for the North and Central-West regions to highlight the borders in the plot. Needing `sf_remove_holes()` to avoid inner borders, we loose a bit of granularity in the outer borders of the broader regions.
 
 ```{r}
 # First, join the population data with municipal boundaries
 pop_spatial <- muni %>%
-  left_join(pop_2010, by = "code_muni")
+  left_join(pop_2010, by = "code_muni") %>%
+  left_join(pop_1960, by = join_by("code_muni" == "code_muni_1960"))
 
 # Use st_centroid to ensure each municipality is counted only once
 pop_meso <- pop_spatial %>%
@@ -422,7 +437,8 @@ pop_meso <- pop_spatial %>%
   st_join(meso) %>% # Join with meso regions
   group_by(code_meso) %>%
   summarise(
-    total_population = sum(total_population, na.rm = TRUE)
+    total_population_2010 = sum(total_population_2010, na.rm = TRUE),
+    total_population_1960 = sum(total_population_1960, na.rm = TRUE)
   ) %>%
   st_drop_geometry() # Remove geometry before joining back
 
@@ -432,7 +448,10 @@ pop_meso <- meso %>%
 
 # Create pop_share
 df_merged <- pop_meso %>%
-  mutate(pop_share = total_population / sum(total_population) * 100)
+  mutate(
+    pop_share_2010 = total_population_2010 / sum(total_population_2010) * 100,
+    pop_share_1960 = total_population_1960 / sum(total_population_1960) * 100,
+  )
 
 # Aggregate regions as the author's did to get the correct boundaries
 region <- region %>%
@@ -451,7 +470,36 @@ region <- region %>%
 
 ## Plotting
 
-```{r}
+We reproduce the same chart for 2010 as the authors did. Due to data issues, we rely on a further chart for 1960, instead of 1950. The 1960 chart resembles the 1950 chart of the authors surpisingly good, though the aforementioned data issues. Lastly, we omit 1980 data, since the population weights were missing in the censobr dataset.
+
+```{r, figures-side, fig.show="hold", out.width="50%"}
+# Final plot - 1960
+ggplot(data = df_merged) +
+  ggtitle("(c) 1960") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5), # Center title while keeping minimal theme
+    panel.grid = element_line(color = "gray90"), # Make grid lines lighter
+    axis.text = element_blank(),
+    axis.ticks = element_blank()
+  ) +
+  geom_sf(aes(fill = pop_share_1960), color = "white", size = 0.1) +
+  scale_fill_stepsn(
+    name = "Pop. Share",
+    breaks = c(0, 0.216, 0.382, 0.557, 1.02, 11.12),
+    labels = scales::number_format(accuracy = 0.001),
+    colors = c("#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"), # Made lower values darker
+    values = scales::rescale(c(0, 0.216, 0.382, 0.557, 1.02, 11.12))
+  ) +
+  geom_sf(data = region, aes(color = factor(name_region)), fill = NA, linewidth = 1) +
+  scale_color_manual(values = c("black", "red")) +
+  guides(color = "none") +
+  # Add titles
+  labs(
+    caption = "Source: Based on Pellegrina and Sotelo (2021)"
+  )
+
+# Final plot - 2010
 ggplot(data = df_merged) +
   ggtitle("(c) 2010") +
   theme_minimal() +
@@ -461,7 +509,7 @@ ggplot(data = df_merged) +
     axis.text = element_blank(),
     axis.ticks = element_blank()
   ) +
-  geom_sf(aes(fill = pop_share), color = "white", size = 0.1) +
+  geom_sf(aes(fill = pop_share_2010), color = "white", size = 0.1) +
   scale_fill_stepsn(
     name = "Pop. Share",
     breaks = c(0, 0.216, 0.382, 0.557, 1.02, 11.12),
@@ -478,9 +526,15 @@ ggplot(data = df_merged) +
   )
 ```
 
-In comparison the third paper map looked as follows:
+In comparison the third paper map looked as follows (left 1950, right 2010):
 
-![Figure 4](data/paper3/original_plot.png)
+<table>
+<tr>
+<td><img src="data/paper3/c1960.jpg" width="400"/></td>
+<td><img src="data/paper3/c2010.jpg" width="400"/></td>
+</tr>
+</table>
+
 
 Again, as outlined above, we only replicate the 2010 map, due to data issues in the prior periods.
 

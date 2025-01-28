@@ -21,9 +21,10 @@ pop_1980 <- read_population(
 
 pop_1960 <- read_population(
   year = 1960,
-  # columns = c("code_state", "code_region", "code_muni", "V5060", "V0010"),
+  columns = c("code_muni_1960", "censobr_weight"),
   showProgress = FALSE,
-  as_data_frame = TRUE
+  as_data_frame = TRUE,
+  # cache = FALSE
 )
 
 df %>%
