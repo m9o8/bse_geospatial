@@ -9,27 +9,24 @@ library(readxl)
 library(ggplot2)
 library(raster)
 library(terra)
+library(geobr)
 library(rmapshaper)
-library(ggplot2)
 library(ggrepel)
 
-path <- ("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 4")
-outpath <- ("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 4")
-
-----------------------------------------
-            # DATA MINING
-----------------------------------------
-
 # We are looking for a shapefile or dataset specifically containing road network data for Vietnam.
+# We inspected data from GADM (https://gadm.org/data.html#google_vignette) but none of the layers in the file appear to contain road network data. All layers are polygons representing administrative boundaries.
 
-# We inspect data from GADM:
-st_layers("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 4/GADM-Vietnam")
+----------------------------------------
+            # DATA LOADING
+----------------------------------------
 
-# None of the layers in the file appear to contain road network data. All layers are polygons representing administrative boundaries. 
+# Define the base path
+path <- "hw1/data/paper4/"
 
 # We inspect data from Humdata:
-st_layers("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 4/ROADS/vnm_rdsl_2015_OSM.shp")
-vietnam_roads <- st_read("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 4/ROADS/vnm_rdsl_2015_OSM.shp")
+st_layers(file.path(path, "ROADS/vnm_rdsl_2015_OSM.shp"))
+# Read the shapefile into an sf object
+vietnam_roads <- st_read(file.path(path, "ROADS/vnm_rdsl_2015_OSM.shp"))
 view(vietnam_roads)
 
 # Get all the unique values from the column 'type'
@@ -39,16 +36,10 @@ print(unique_values)
 # Although the data is from 2015, whereas the paper displays roads from 2010, we decide to move forward with this data as road network.
 
 # We inspect data from SimpleMaps:
-st_layers("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 4/VIETNAM")
+st_layers(file.path(path,"VIETNAM"))
+vietnam_map <- st_read(file.path(path,"VIETNAM", layer = "vn"))
 
 # We decide to move forward with this data as Vietnam boundary.
-----------------------------------------
-            # DATA LOADING
-----------------------------------------
-
-# Vietnam's road network shapefile already loaded as vietnam_roads following inspection
-
-vietnam_map <- st_read("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 4/VIETNAM", layer = "vn")
 
 ----------------------------------------
             # DATA WRANGLING
@@ -110,4 +101,4 @@ ggplot() +
     axis.ticks = element_blank()   # Removes axis ticks
   )
 
-In comparaison the fourth paper map looked as follows: ![Figure 3]()
+# In comparaison the fourth paper map looked as follows: ![Figure 3]()

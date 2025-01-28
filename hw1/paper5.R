@@ -9,26 +9,25 @@ library(readxl)
 library(ggplot2)
 library(raster)
 library(terra)
+library(geobr)
 library(rmapshaper)
-library(ggplot2)
 library(ggrepel)
-
-path <- ("hw1/data/paper5/")
-outpath <- ("/Users/simonvellin/Documents/BSE/TERM 2/GEOSPATIAL/0. ASSIGNMENTS/HW1/PAPER 5/OUTPUT")
-
-
-### Data mining
 
 # The author's replication package is accessible, so we move forward with it's code/data (https://www.openicpsr.org/openicpsr/project/183316/version/V1/view).
 
-### Data loading
+----------------------------------------
+          # DATA LOADING
+----------------------------------------
+path <- ("hw1/data/paper5/")
 
 # Load the shapefile containing state boundaries for Brazil (1940 projection)
 states <- st_read(file.path(path, "GIS_data/uf1940/uf1940_prj.shp"))
 # Simplify the state boundaries to reduce file size while maintaining shape integrity
 states_simple  <- rmapshaper::ms_simplify(states,keep=0.01,keep_shapes=TRUE)
 
-### Data wrangling
+----------------------------------------
+          # DATA WRANGLING
+----------------------------------------
 
 # Define the year for the highways data
 year  <- 2000
@@ -38,7 +37,7 @@ file_name = paste0("/",year,"/highways_",year,"_prj.shp")
 
 # Load the highways shapefile for the specified year
 all_highways <- st_read(file.path(path, "GIS_data/roads", file_name))
-# Simplify the highways data for efficient plotting
+# Simplify the highways data
 all_highways_simple <- rmapshaper::ms_simplify(all_highways,keep=0.01,keep_shapes=TRUE)
 
 # Load and simplify the minimum spanning tree (MST) shapefile for pie distribution
@@ -53,10 +52,12 @@ mst_all_rio_simple  <- rmapshaper::ms_simplify(mst_all_rio,keep=0.01,keep_shapes
 capital_cities <- st_read(file.path(path, "GIS_data/cities/brazil_capital_cities_prj.shp"))
 cities_xy <- cbind(capital_cities,st_coordinates(capital_cities))
 
-### Plotting
+----------------------------------------
+          # PLOTTING
+----------------------------------------
 
 # Create a plot showing MST and highway networks in Brazil
-fig_1  <- ggplot() +
+fig_5  <- ggplot() +
   # Add state boundaries as the base layer with light grey outlines
   geom_sf(data=states_simple, fill="white", color="grey90") +
   # Add the simplified MST data with a unique linetype and color
@@ -82,8 +83,6 @@ fig_1  <- ggplot() +
     axis.title = element_blank()
   )
 
-# Save the plot as a PDF
-ggsave(file.path(outpath, "figure1_paper5_test.pdf"), fig_1, width = 8, height = 8)
+print(fig_5)
 
-
-In comparison the fifth paper map looked as follows: ![Figure 1]()
+# In comparaison the fifth paper map looked as follows: ![Figure 1](data/paper5/original_plot.png)

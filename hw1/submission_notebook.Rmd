@@ -60,10 +60,12 @@ library(spData) # Spatial data
 library(geobr) # Brazilian boundaries
 library(censobr) # Brazilian population data
 library(lwgeom) # Needed for st_make_valid
+library(rmapshaper) # Simplify and edit spatial features
+library(ggrepel) # Repel overlapping text labels in ggplot
 
 # Data import
 library(geodata) # For elevation data
-library(readxl) # For Excel files
+library(readxl) # Import and read Excel files
 ```
 
 <hr>
@@ -552,28 +554,180 @@ In comparison the third paper map looked as follows (left 1950, right 2010):
 
 <hr>
 
-# Paper 4
+# [Paper 4](https://economics.mit.edu/sites/default/files/publications/Catastrophe_Risk_and_Settlement_Location.pdf)
+
+We are looking for a shapefile or dataset specifically containing road network data for Vietnam. We inspected data from GADM (https://gadm.org/data.html#google_vignette) but none of the layers in the file appear to contain road network data. All layers are polygons representing administrative boundaries.
 
 ## Data loading
 
+```{r}
+# Define the base path
+path <- "data/paper4"
+
+# We inspect data from Humdata:
+st_layers(file.path(path, "ROADS/vnm_rdsl_2015_OSM.shp"))
+# Read the shapefile into an sf object
+vietnam_roads <- st_read(file.path(path, "ROADS/vnm_rdsl_2015_OSM.shp"))
+view(vietnam_roads)
+
+# Get all the unique values from the column 'type'
+unique_values <- unique(vietnam_roads$type)
+print(unique_values)
+```
+
+Although the data is from 2015, whereas the paper displays roads from 2010, we decide to use this data as road networks.
+
+```{r}
+# We inspect data from SimpleMaps:
+st_layers(file.path(path,"VIETNAM/"))
+
+vietnam_map <- st_read(file.path(path,"VIETNAM", layer = "vn.shp"))
+```
+
+We decide to move forward with this data as Vietnam boundary.
+
 ## Data wrangling
 
+We use the author's documentation (https://www.openicpsr.org/openicpsr/project/207641/version/V1/view;jsessionid=3EBB67FC7920B2090C0D74C349E99F93?path=/openicpsr/207641/fcr:versions/V1/Public-replication-files/Replication_README.pdf&type=file) to understand how he categorised the types of roads.
+
+```{r}
+# Categorise roads into group by trying to replicate the author's logic
+vietnam_roads <- vietnam_roads %>%
+  mutate(
+    road_category = case_when(
+      type %in% c("motorway", "motorway_link") ~ "Freeway",
+      type %in% c("trunk", "trunk_link") ~ "Dual Carriageway",
+      type %in% c("secondary") ~ "Major Roads",
+      type %in% c("primary", "primary_link", "secondary_link", "tertiary", "tertiary_link", "residential", "living_street") ~ "Minor Roads",
+      TRUE ~ "Other Roads"
+  )
+)
+```
+
 ## Plotting
+
+```{r}
+ggplot() +
+  # Adding the map of Vietnam as the base layer, using a light grey fill like the paper
+  geom_sf(data = vietnam_map, fill = "lightgrey", color = "black", linetype = "solid", size = 0.5) +
+  
+  # Overlaying the road network on the map.
+  geom_sf(data = vietnam_roads, aes(color = road_category, linewidth = road_category), alpha = 0.8) +
+
+  # The 'color' aesthetic differentiates road categories
+  scale_color_manual(
+    values = c(
+      "Freeway" = "blue",               
+      "Dual Carriageway" = "darkgreen", 
+      "Major Roads" = "red",            
+      "Minor Roads" = "orange",       
+      "Other Roads" = "yellow"        
+    )
+  ) +
+  # The 'linewidth' aesthetic adjusts line thickness based on road types for visual distinction
+  scale_linewidth_manual(
+    values = c(
+      "Freeway" = 1.1,                # Thick line
+      "Dual Carriageway" = 1.1,       # Thick line
+      "Major Roads" = 0.5,            # Thin line
+      "Minor Roads" = 0.5,            # Thin line
+      "Other Roads" = 0.3             # Extra thin line
+    )
+  ) +
+  labs(
+    title = "Road maps of Vietnam",
+    color = "Road Category",
+    linewidth = "Road Category"    # Ensures the size legend matches the color legend
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),  # Removes grid lines
+    axis.title = element_blank(),  # Removes axis titles
+    axis.text = element_blank(),   # Removes axis text
+    axis.ticks = element_blank()   # Removes axis ticks
+  )
+```
 
 In comparison the fourth paper map looked as follows: 
 
-![Figure x]()
+![Figure 3](data/paper4/original_plot.png)
 
 <hr>
 
-# Paper 5
+# [Paper 5](https://web.stanford.edu/~memorten/ewExternalFiles/Morten_Oliveira_Brasilia.pdf)
+
+The author's replication package is accessible, so we move forward with it's code and data (https://www.openicpsr.org/openicpsr/project/183316/version/V1/view).
 
 ## Data loading
 
+```{r}
+path <- ("data/paper5/")
+
+# Load the shapefile containing state boundaries for Brazil (1940 projection)
+states <- st_read(file.path(path, "GIS_data/uf1940/uf1940_prj.shp"))
+# Simplify the state boundaries to reduce file size while maintaining shape integrity
+states_simple  <- rmapshaper::ms_simplify(states,keep=0.01,keep_shapes=TRUE)
+```
+
 ## Data wrangling
+
+```{r}
+# Define the year for the highways data
+year  <- 2000
+
+# Construct the file path for the highways shapefile dynamically based on the year
+file_name = paste0("/",year,"/highways_",year,"_prj.shp")
+
+# Load the highways shapefile for the specified year
+all_highways <- st_read(file.path(path, "GIS_data/roads", file_name))
+# Simplify the highways data
+all_highways_simple <- rmapshaper::ms_simplify(all_highways,keep=0.01,keep_shapes=TRUE)
+
+# Load and simplify the minimum spanning tree (MST) shapefile for pie distribution
+mst_pie <- st_read(file.path(path, "GIS_data/mst/mst_pie_prj.shp"))
+mst_pie_simple  <- rmapshaper::ms_simplify(mst_pie,keep=0.01,keep_shapes=TRUE)
+
+# Load and simplify MST data excluding pies for Rio region
+mst_all_rio <- st_read(file.path(path, "GIS_data/mst/mst_all_rio_prj.shp"))
+mst_all_rio_simple  <- rmapshaper::ms_simplify(mst_all_rio,keep=0.01,keep_shapes=TRUE)
+
+# Load shapefile for capital cities and extract coordinates for labeling
+capital_cities <- st_read(file.path(path, "GIS_data/cities/brazil_capital_cities_prj.shp"))
+cities_xy <- cbind(capital_cities,st_coordinates(capital_cities))
+```
 
 ## Plotting
 
+```{r}
+# Create a plot showing MST and highway networks in Brazil
+fig_5  <- ggplot() +
+  # Add state boundaries as the base layer with light grey outlines
+  geom_sf(data=states_simple, fill="white", color="grey90") +
+  # Add the simplified MST data with a unique linetype and color
+  geom_sf(data=mst_pie_simple, size=.6, linetype = "11", aes(color = "Minimum spanning tree"), show.legend = "line")   +
+  # Add non-radial highways with a dashed line style
+  geom_sf(data=all_highways_simple %>% filter(dm_anlys_p==1 & dm_radial==0), size=.3, linetype = "dashed", aes(color = "Non-radial highways (2000)"), show.legend = "line") +   
+  # Add radial highways with a solid line style
+  geom_sf(data=all_highways_simple %>% filter(dm_anlys_p==1 & dm_radial==1), size=0.6, aes(color = "Radial highways (2000)"), show.legend = "line") +
+  # Minimal theme for simplicity
+  theme_minimal() +
+  # Overlay capital cities and label them with their names
+  geom_point(data=cities_xy, aes(x=X, y=Y)) +
+  geom_text_repel(data=cities_xy, aes(x=X, y=Y, label=CITY_NAME)) +
+  # Add a custom legend for line types and colors
+  labs(color = " ") +
+  scale_color_manual(values=c("#777676","#868686","#565555"),
+                     guide = guide_legend(override.aes = list(linetype = c("11", "dashed", "solid")))) +
+  # Remove axis lines, ticks, and text for a clean map appearance
+  theme(
+    axis.line = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank()
+  )
+
+print(fig_5)
+```
 In comparison the fifth paper map looked as follows: 
 
-![Figure x]()
+![Figure 1](data/paper5/original_plot.png)
