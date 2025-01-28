@@ -535,9 +535,6 @@ In comparison the third paper map looked as follows (left 1950, right 2010):
 </tr>
 </table>
 
-
-Again, as outlined above, we only replicate the 2010 map, due to data issues in the prior periods.
-
 <hr>
 
 # Paper 4
