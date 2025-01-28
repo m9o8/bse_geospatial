@@ -44,7 +44,7 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 
 # Methodology & general code
 
-In the following notebook we replicate the charts for all 5 papers. Contentwise, the code follows always the same structure. We first load the data, then we create the chart and finally display it.
+In the following notebook we replicate the charts for all 5 papers. Contentwise, the code follows always the same structure. We first load the data, secondly manipulate it, then we create the chart and finally display it.
 
 First we load the needed packages:
 
@@ -390,7 +390,9 @@ The authors of the paper do not provide a direct link to the data, but they refe
 
 We retrieve population data via the censobr package, which compiled census and population data based on IBGE statistics. Administrative boundary data for is available in the R package geobr. 
 
-While the authors produced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year, i.e., 2010 and with flaws for 1960 (i.e., we're missing around 13 mln people of the overall population in 1960 due to data compilation issues of the earlier census approaches of the IBGE such as non-digitalized records - [see here](https://ipeagit.github.io/censobr/reference/read_population.html#-census) for more information). Specifically, on the IBGE website, we found data for 2009, while the censobr package provides the 2010 data. It also provides census data for 1980 and 1960. However, for 1980, it seems that the population weights are missing. Therefore, we decided to focus on the 2010 and 1960 data.
+While the authors produced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year, i.e., 2010 and with flaws for 1960 (i.e., we're missing around 13 mln people of the overall population in 1960 due to data compilation issues of the earlier census approaches of the IBGE such as non-digitalized records - [see here](https://ipeagit.github.io/censobr/reference/read_population.html#-census) for more information).
+
+On the IBGE website, we found data for 2009, while the censobr package provides the 2010 data. It also provides census data for 1980 and 1960. However, for 1980, it seems that the population weights are missing. Therefore, we decided to focus on the 2010 and 1960 data.
 
 
 ```{r}
@@ -481,7 +483,10 @@ region <- region %>%
 
 ## Plotting
 
-We reproduce the same chart for 2010, as the authors did. Due to data non-availability, we rely on a further chart for 1960, instead of 1950. The 1960 chart resembles the 1950 chart of the authors surprisingly well, despite the aforementioned data issues. Lastly, we omit 1980 data, since the population weights were missing in the censobr dataset and we were not able to infer them accurately.
+We reproduce the same chart for 2010, as the authors did. Due to data non-availability, we rely on a further chart for 1960, instead of 1950. The 1960 chart resembles the 1950 chart of the authors surprisingly well, despite the aforementioned data issues. The Northern regions being significantly different might be explained by the censobr authors who inter alia state that for 1960:
+>"Information is missing for the states of the former Northern Region, Maranhão, Piaui, Guanabara, Santa Catarina, and Espírito Santo".
+
+Lastly, we omit 1980 data, since the population weights were missing in the censobr dataset and we were not able to infer them accurately.
 
 ```{r, figures-side, fig.show="hold", out.width="50%"}
 # Final plot - 1960
@@ -556,7 +561,7 @@ In comparison the third paper map looked as follows (left 1950, right 2010):
 
 # [Paper 4](https://economics.mit.edu/sites/default/files/publications/Catastrophe_Risk_and_Settlement_Location.pdf)
 
-We are looking for a shapefile or dataset specifically containing road network data for Vietnam. We inspected data from GADM (https://gadm.org/data.html#google_vignette) but none of the layers in the file appear to contain road network data. All layers are polygons representing administrative boundaries.
+We are looking for a shapefile or dataset specifically containing road network data for Vietnam. We inspected data from [GADM](https://gadm.org/data.html#google_vignette) but none of the layers in the file appear to contain road network data. All layers are polygons representing administrative boundaries.
 
 ## Data loading
 
@@ -568,7 +573,6 @@ path <- "data/paper4"
 st_layers(file.path(path, "ROADS/vnm_rdsl_2015_OSM.shp"))
 # Read the shapefile into an sf object
 vietnam_roads <- st_read(file.path(path, "ROADS/vnm_rdsl_2015_OSM.shp"))
-view(vietnam_roads)
 
 # Get all the unique values from the column 'type'
 unique_values <- unique(vietnam_roads$type)
@@ -579,16 +583,16 @@ Although the data is from 2015, whereas the paper displays roads from 2010, we d
 
 ```{r}
 # We inspect data from SimpleMaps:
-st_layers(file.path(path,"VIETNAM/"))
+st_layers(file.path(path, "VIETNAM/"))
 
-vietnam_map <- st_read(file.path(path,"VIETNAM", layer = "vn.shp"))
+vietnam_map <- st_read(file.path(path, "VIETNAM", layer = "vn.shp"))
 ```
 
 We decide to move forward with this data as Vietnam boundary.
 
 ## Data wrangling
 
-We use the author's documentation (https://www.openicpsr.org/openicpsr/project/207641/version/V1/view;jsessionid=3EBB67FC7920B2090C0D74C349E99F93?path=/openicpsr/207641/fcr:versions/V1/Public-replication-files/Replication_README.pdf&type=file) to understand how he categorised the types of roads.
+We use the [author's documentation](https://www.openicpsr.org/openicpsr/project/207641/version/V1/view;jsessionid=3EBB67FC7920B2090C0D74C349E99F93?path=/openicpsr/207641/fcr:versions/V1/Public-replication-files/Replication_README.pdf&type=file) to understand how he categorised the types of roads.
 
 ```{r}
 # Categorise roads into group by trying to replicate the author's logic
@@ -600,8 +604,8 @@ vietnam_roads <- vietnam_roads %>%
       type %in% c("secondary") ~ "Major Roads",
       type %in% c("primary", "primary_link", "secondary_link", "tertiary", "tertiary_link", "residential", "living_street") ~ "Minor Roads",
       TRUE ~ "Other Roads"
+    )
   )
-)
 ```
 
 ## Plotting
@@ -610,41 +614,41 @@ vietnam_roads <- vietnam_roads %>%
 ggplot() +
   # Adding the map of Vietnam as the base layer, using a light grey fill like the paper
   geom_sf(data = vietnam_map, fill = "lightgrey", color = "black", linetype = "solid", size = 0.5) +
-  
+
   # Overlaying the road network on the map.
   geom_sf(data = vietnam_roads, aes(color = road_category, linewidth = road_category), alpha = 0.8) +
 
   # The 'color' aesthetic differentiates road categories
   scale_color_manual(
     values = c(
-      "Freeway" = "blue",               
-      "Dual Carriageway" = "darkgreen", 
-      "Major Roads" = "red",            
-      "Minor Roads" = "orange",       
-      "Other Roads" = "yellow"        
+      "Freeway" = "blue",
+      "Dual Carriageway" = "darkgreen",
+      "Major Roads" = "red",
+      "Minor Roads" = "orange",
+      "Other Roads" = "yellow"
     )
   ) +
   # The 'linewidth' aesthetic adjusts line thickness based on road types for visual distinction
   scale_linewidth_manual(
     values = c(
-      "Freeway" = 1.1,                # Thick line
-      "Dual Carriageway" = 1.1,       # Thick line
-      "Major Roads" = 0.5,            # Thin line
-      "Minor Roads" = 0.5,            # Thin line
-      "Other Roads" = 0.3             # Extra thin line
+      "Freeway" = 1.1, # Thick line
+      "Dual Carriageway" = 1.1, # Thick line
+      "Major Roads" = 0.5, # Thin line
+      "Minor Roads" = 0.5, # Thin line
+      "Other Roads" = 0.3 # Extra thin line
     )
   ) +
   labs(
     title = "Road maps of Vietnam",
     color = "Road Category",
-    linewidth = "Road Category"    # Ensures the size legend matches the color legend
+    linewidth = "Road Category" # Ensures the size legend matches the color legend
   ) +
   theme_minimal() +
   theme(
-    panel.grid = element_blank(),  # Removes grid lines
-    axis.title = element_blank(),  # Removes axis titles
-    axis.text = element_blank(),   # Removes axis text
-    axis.ticks = element_blank()   # Removes axis ticks
+    panel.grid = element_blank(), # Removes grid lines
+    axis.title = element_blank(), # Removes axis titles
+    axis.text = element_blank(), # Removes axis text
+    axis.ticks = element_blank() # Removes axis ticks
   )
 ```
 
@@ -656,7 +660,7 @@ In comparison the fourth paper map looked as follows:
 
 # [Paper 5](https://web.stanford.edu/~memorten/ewExternalFiles/Morten_Oliveira_Brasilia.pdf)
 
-The author's replication package is accessible, so we move forward with it's code and data (https://www.openicpsr.org/openicpsr/project/183316/version/V1/view).
+The author's replication package is accessible, so we move forward with it's [code and data](https://www.openicpsr.org/openicpsr/project/183316/version/V1/view).
 
 ## Data loading
 
@@ -666,58 +670,64 @@ path <- ("data/paper5/")
 # Load the shapefile containing state boundaries for Brazil (1940 projection)
 states <- st_read(file.path(path, "GIS_data/uf1940/uf1940_prj.shp"))
 # Simplify the state boundaries to reduce file size while maintaining shape integrity
-states_simple  <- rmapshaper::ms_simplify(states,keep=0.01,keep_shapes=TRUE)
+states_simple <- rmapshaper::ms_simplify(states, keep = 0.01, keep_shapes = TRUE)
 ```
 
 ## Data wrangling
 
+Since the authors' description is very comprehensive, we proceed also with their data manipulation approach.
+
 ```{r}
 # Define the year for the highways data
-year  <- 2000
+year <- 2000
 
 # Construct the file path for the highways shapefile dynamically based on the year
-file_name = paste0("/",year,"/highways_",year,"_prj.shp")
+file_name <- paste0("/", year, "/highways_", year, "_prj.shp")
 
 # Load the highways shapefile for the specified year
 all_highways <- st_read(file.path(path, "GIS_data/roads", file_name))
 # Simplify the highways data
-all_highways_simple <- rmapshaper::ms_simplify(all_highways,keep=0.01,keep_shapes=TRUE)
+all_highways_simple <- rmapshaper::ms_simplify(all_highways, keep = 0.01, keep_shapes = TRUE)
 
 # Load and simplify the minimum spanning tree (MST) shapefile for pie distribution
 mst_pie <- st_read(file.path(path, "GIS_data/mst/mst_pie_prj.shp"))
-mst_pie_simple  <- rmapshaper::ms_simplify(mst_pie,keep=0.01,keep_shapes=TRUE)
+mst_pie_simple <- rmapshaper::ms_simplify(mst_pie, keep = 0.01, keep_shapes = TRUE)
 
 # Load and simplify MST data excluding pies for Rio region
 mst_all_rio <- st_read(file.path(path, "GIS_data/mst/mst_all_rio_prj.shp"))
-mst_all_rio_simple  <- rmapshaper::ms_simplify(mst_all_rio,keep=0.01,keep_shapes=TRUE)
+mst_all_rio_simple <- rmapshaper::ms_simplify(mst_all_rio, keep = 0.01, keep_shapes = TRUE)
 
 # Load shapefile for capital cities and extract coordinates for labeling
 capital_cities <- st_read(file.path(path, "GIS_data/cities/brazil_capital_cities_prj.shp"))
-cities_xy <- cbind(capital_cities,st_coordinates(capital_cities))
+cities_xy <- cbind(capital_cities, st_coordinates(capital_cities))
 ```
 
 ## Plotting
 
+Lastly, we also use their plotting approach:
+
 ```{r}
 # Create a plot showing MST and highway networks in Brazil
-fig_5  <- ggplot() +
+ggplot() +
   # Add state boundaries as the base layer with light grey outlines
-  geom_sf(data=states_simple, fill="white", color="grey90") +
+  geom_sf(data = states_simple, fill = "white", color = "grey90") +
   # Add the simplified MST data with a unique linetype and color
-  geom_sf(data=mst_pie_simple, size=.6, linetype = "11", aes(color = "Minimum spanning tree"), show.legend = "line")   +
+  geom_sf(data = mst_pie_simple, size = .6, linetype = "11", aes(color = "Minimum spanning tree"), show.legend = "line") +
   # Add non-radial highways with a dashed line style
-  geom_sf(data=all_highways_simple %>% filter(dm_anlys_p==1 & dm_radial==0), size=.3, linetype = "dashed", aes(color = "Non-radial highways (2000)"), show.legend = "line") +   
+  geom_sf(data = all_highways_simple %>% filter(dm_anlys_p == 1 & dm_radial == 0), size = .3, linetype = "dashed", aes(color = "Non-radial highways (2000)"), show.legend = "line") +
   # Add radial highways with a solid line style
-  geom_sf(data=all_highways_simple %>% filter(dm_anlys_p==1 & dm_radial==1), size=0.6, aes(color = "Radial highways (2000)"), show.legend = "line") +
+  geom_sf(data = all_highways_simple %>% filter(dm_anlys_p == 1 & dm_radial == 1), size = 0.6, aes(color = "Radial highways (2000)"), show.legend = "line") +
   # Minimal theme for simplicity
   theme_minimal() +
   # Overlay capital cities and label them with their names
-  geom_point(data=cities_xy, aes(x=X, y=Y)) +
-  geom_text_repel(data=cities_xy, aes(x=X, y=Y, label=CITY_NAME)) +
+  geom_point(data = cities_xy, aes(x = X, y = Y)) +
+  geom_text_repel(data = cities_xy, aes(x = X, y = Y, label = CITY_NAME)) +
   # Add a custom legend for line types and colors
   labs(color = " ") +
-  scale_color_manual(values=c("#777676","#868686","#565555"),
-                     guide = guide_legend(override.aes = list(linetype = c("11", "dashed", "solid")))) +
+  scale_color_manual(
+    values = c("#777676", "#868686", "#565555"),
+    guide = guide_legend(override.aes = list(linetype = c("11", "dashed", "solid")))
+  ) +
   # Remove axis lines, ticks, and text for a clean map appearance
   theme(
     axis.line = element_blank(),
@@ -725,9 +735,8 @@ fig_5  <- ggplot() +
     axis.ticks = element_blank(),
     axis.title = element_blank()
   )
-
-print(fig_5)
 ```
+
 In comparison the fifth paper map looked as follows: 
 
 ![Figure 1](data/paper5/original_plot.png)
