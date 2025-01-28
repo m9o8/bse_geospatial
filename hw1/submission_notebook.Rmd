@@ -72,9 +72,9 @@ library(readxl) # For Excel files
 
 ## Data loading
 
-The authors of the paper provide a link to the data, however, the link is unfortunately outdated. Yet, the data is available in a newer version on the [website](https://www.dws.gov.za/DSO/publications.aspx) (authors used 2013 data, we use 2024 data) but had to be converted to geojson format before usage.
+The authors of the paper provide a link to the data, however, the link is unfortunately outdated. Yet, the data is available in a newer version on [this website](https://www.dws.gov.za/DSO/publications.aspx). The authors used 2013 data, we use 2024 data but had to convert the downloaded data to geojson format before usage.
 
-Moreover, the river gradient data was not directly available, so we use the elevation data from the geodata package to retrieve and later calculate gradients.
+Moreover, the river gradient data was not directly available, so we use the elevation data from the geodata package to retrieve and later calculate river gradients.
 
 ```{r}
 # Set geodata default path
@@ -215,7 +215,7 @@ In comparison the first paper map looked as follows:
 
 ## Data loading
 
-Unfortunately, again the data was not directly available. Therefore, we leverage some r packages to get the data for highways, powergrids (osmdata) and population data from 2020 (geodata). The [ERSS survey](https://microdata.worldbank.org/index.php/catalog/2053/data-dictionary) data was directly available via the World Bank data repositories as a CSV (2011/12) data used as in the paper. We load all of these in the following:
+Unfortunately, again the data was not directly available. Therefore, we leverage some R packages, i.e., to get the data for highways, powergrids we used the osmdata package and for population data from 2020 we used the geodata package. The [ERSS survey](https://microdata.worldbank.org/index.php/catalog/2053/data-dictionary) data was directly available via the World Bank data repositories as a CSV (2011/12) and is identical to the data used in the paper. We load all of these in the following:
 
 ```{r}
 # Set geodata default path
@@ -270,7 +270,7 @@ ethiopia_roads <- opq("Ethiopia") %>%
 
 ## Data wrangling
 
-We calculate the population density for each district and clip the roads to the Ethiopia boundary. Furthermore, t looks like the authors used slightly different road and powergrid networks. However, overall the grids look broadly similar when utilizing OpenStreetMap data. 
+We calculate the population density for each district and clip the roads to the Ethiopia boundary. Furthermore, it looks like the authors used slightly different road and powergrid networks. However, overall the grids look broadly similar when utilizing OpenStreetMap data via the osmdata package. 
 
 ```{r}
 # Clip roads to Ethiopia boundary
@@ -297,12 +297,14 @@ Finally, we output the plot:
 ```{r}
 # Create the final plot
 ggplot() +
+  # Administrative boundaries
   geom_sf(
     data = eth_districts_sf,
     aes(fill = pop_density),
     color = "gray50",
     linewidth = 0.1
   ) +
+  # Population density
   scale_fill_gradientn(
     colors = c("white", "lightblue", "royalblue", "navy"),
     trans = "log",
@@ -310,16 +312,19 @@ ggplot() +
     labels = scales::comma,
     guide = guide_colorbar(order = 1)
   ) +
+  # Adding roads
   geom_sf(
     data = roads_clipped,
     aes(color = "Highway"),
     linewidth = 0.5
   ) +
+  # Adding HV powerlines
   geom_sf(
     data = hv_lines_clean,
     aes(color = "HV grid"),
     linewidth = 0.35
   ) +
+  # Adding survey villages
   geom_sf(
     data = wb_data_geo,
     aes(shape = "Survey village"),
@@ -327,6 +332,7 @@ ggplot() +
     size = 1,
     alpha = 0.6
   ) +
+  # Adding legends
   scale_color_manual(
     name = NULL,
     values = c("Highway" = "black", "HV grid" = "red"),
@@ -337,6 +343,7 @@ ggplot() +
     values = c("Survey village" = 16),
     guide = guide_legend(order = 3)
   ) +
+  # Styling
   guides(
     fill = guide_colorbar(order = 1),
     color = guide_legend(
@@ -377,11 +384,11 @@ The different color labeling of the surveyed villages is unfortunately not expla
 
 ## Data loading
 
-The authors of the paper do not provide a direct link to the data, but they refer to the Brazilian Statistical Bureau (IBGE) when introducing the "meso-regions," which are the political boundaries used in their plots.
+The authors of the paper do not provide a direct link to the data, but they refer to the Brazilian Statistical Bureau (IBGE) when talkig about population data and introducing the "meso-regions", which are the political boundaries used in their plots.
 
-We retrieved population data from the aforementioned IBGE website and used geographical data available in the R package geobr. While the authors produced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year, i.e., 2010 and with flaws for 1960 (i.e., we're missing around 13 mln people of the overall population in 1960 due to data compilation issues of the earlier census approaches of the IBGE - [see here](https://ipeagit.github.io/censobr/reference/read_population.html#-census) for more information). Specifically, on the IBGE website, we found data for 2009, and the censobr package provides the 2010 data. It also provides census data for 1980 and 1960, but in 1980, it seems the population weights are missing. Therefore, we decided to focus on the 2010 and 1960 data.
+We retrieve population data via the censobr package, which compiled census and population data based on IBGE statistics. Administrative boundary data for is available in the R package geobr. 
 
-For geographical boundaries of Brazil for administrative areas, we use the geobr package.
+While the authors produced the same plot for three different years — 1950, 1980, and 2010 — due to a lack of data, we were only able to reproduce the plot for the most recent year, i.e., 2010 and with flaws for 1960 (i.e., we're missing around 13 mln people of the overall population in 1960 due to data compilation issues of the earlier census approaches of the IBGE such as non-digitalized records - [see here](https://ipeagit.github.io/censobr/reference/read_population.html#-census) for more information). Specifically, on the IBGE website, we found data for 2009, while the censobr package provides the 2010 data. It also provides census data for 1980 and 1960. However, for 1980, it seems that the population weights are missing. Therefore, we decided to focus on the 2010 and 1960 data.
 
 
 ```{r}
@@ -423,7 +430,9 @@ muni <- read_municipality(year = 2010) %>%
 
 ## Data wrangling
 
-First, we join the 1960 and 2010 population data with munipalicity level data  to ensure that both datasets refer to the same political boundaries. Next, we joined the two datasets based with the meso code and group on meso level to get the wanted granularity. We had to take a rather coarse-granular approach by using the `st_centroid()` function to match meso-regions with municipalities. This leads us to loosing out roughly on 50'000 inhabitants in 2010. After this, we created a column indicating the population share, multiplying the ratio by 100 to make the results more consistent with the paper. Finally, we filtered the data for the North and Central-West regions to highlight the borders in the plot. Needing `sf_remove_holes()` to avoid inner borders, we loose a bit of granularity in the outer borders of the broader regions.
+First, we join the 1960 and 2010 population data with munipalicity level data to ensure that both datasets refer to the same political boundaries. Next, we joined the two datasets based with the meso code and group on meso level to get the wanted granularity. We had to take a rather coarse-granular approach by using the `st_centroid()` function to match meso-regions with municipalities. This leads us to loosing out roughly on 50'000 inhabitants in 2010. 
+
+After this, we created a column indicating the population share, multiplying the ratio by 100 to make the results more consistent with the paper. Finally, we added the boundary data for the North and Central-West regions to highlight the borders in the plot as done by the authors. Needing `sf_remove_holes()` to avoid inner borders, we loose a bit of granularity in the outer borders of the broader regions.
 
 ```{r}
 # First, join the population data with municipal boundaries
@@ -470,7 +479,7 @@ region <- region %>%
 
 ## Plotting
 
-We reproduce the same chart for 2010 as the authors did. Due to data issues, we rely on a further chart for 1960, instead of 1950. The 1960 chart resembles the 1950 chart of the authors surpisingly good, though the aforementioned data issues. Lastly, we omit 1980 data, since the population weights were missing in the censobr dataset.
+We reproduce the same chart for 2010, as the authors did. Due to data non-availability, we rely on a further chart for 1960, instead of 1950. The 1960 chart resembles the 1950 chart of the authors surprisingly well, despite the aforementioned data issues. Lastly, we omit 1980 data, since the population weights were missing in the censobr dataset and we were not able to infer them accurately.
 
 ```{r, figures-side, fig.show="hold", out.width="50%"}
 # Final plot - 1960
@@ -483,7 +492,9 @@ ggplot(data = df_merged) +
     axis.text = element_blank(),
     axis.ticks = element_blank()
   ) +
+  # Add population share fill
   geom_sf(aes(fill = pop_share_1960), color = "white", size = 0.1) +
+  # Color scales
   scale_fill_stepsn(
     name = "Pop. Share",
     breaks = c(0, 0.216, 0.382, 0.557, 1.02, 11.12),
@@ -491,6 +502,7 @@ ggplot(data = df_merged) +
     colors = c("#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"), # Made lower values darker
     values = scales::rescale(c(0, 0.216, 0.382, 0.557, 1.02, 11.12))
   ) +
+  # Add region boundaries
   geom_sf(data = region, aes(color = factor(name_region)), fill = NA, linewidth = 1) +
   scale_color_manual(values = c("black", "red")) +
   guides(color = "none") +
@@ -509,7 +521,9 @@ ggplot(data = df_merged) +
     axis.text = element_blank(),
     axis.ticks = element_blank()
   ) +
+  # Add population share fill
   geom_sf(aes(fill = pop_share_2010), color = "white", size = 0.1) +
+  # Color scales
   scale_fill_stepsn(
     name = "Pop. Share",
     breaks = c(0, 0.216, 0.382, 0.557, 1.02, 11.12),
@@ -517,6 +531,7 @@ ggplot(data = df_merged) +
     colors = c("#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"), # Made lower values darker
     values = scales::rescale(c(0, 0.216, 0.382, 0.557, 1.02, 11.12))
   ) +
+  # Add region boundaries
   geom_sf(data = region, aes(color = factor(name_region)), fill = NA, linewidth = 1) +
   scale_color_manual(values = c("black", "red")) +
   guides(color = "none") +
