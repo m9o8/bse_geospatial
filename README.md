@@ -5,4 +5,5 @@ A repo for the BSE course Geospatial Data Science in term 2 of the 2024-2025 coh
 
 The following repository contains folder for each project and submission, i.e.:
 
-- [`hw1`](hw1): Homework 1 submission
+- [`hw1`](hw1): Homework 1 submission (Paper replications)
+- [`hw2`](hw2): Homework 2 submission (World map visualization)

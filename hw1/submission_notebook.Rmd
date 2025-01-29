@@ -37,7 +37,7 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 ```
 
 <div style="text-align: center;">
-  <img src="Barcelona_School_of_Economics_logo.svg" alt="BSE logo">
+  <img src="../Barcelona_School_of_Economics_logo.svg" alt="BSE logo">
 </div>
 
 <hr>

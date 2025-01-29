@@ -1,0 +1,60 @@
+---
+title: "Geospatial - Assignment 2"
+author: 
+- Moritz Peist
+- Noemi Lucchi
+- Simon Vellin
+output:
+  html_document:
+    toc: true
+  pdf_document:
+    toc: true
+---
+
+<hr>
+
+```{css, echo=FALSE}
+h1.title {
+  text-align: center;
+}
+
+h4.author, h4.date {
+  text-align: center;
+}
+
+.author {
+  text-align: center;
+}
+
+.date {
+  text-align: center;
+}
+```
+
+```{r setup, include=FALSE}
+# Disable warning messages
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+<div style="text-align: center;">
+  <img src="../Barcelona_School_of_Economics_logo.svg" alt="BSE logo">
+</div>
+
+<hr>
+
+# Methodology & general code
+
+In the following notebook we replicate the charts for all 5 papers. Contentwise, the code follows always the same structure. We first load the data, secondly manipulate it, then we create the chart and finally display it.
+
+First we load the needed packages:
+
+```{r}
+# Main tidyverse (includes ggplot2)
+library(tidyverse)
+
+# Spatial packages
+library(sf)
+```
+
+<hr>
+
