@@ -87,12 +87,49 @@ population_distribution <- population_distribution %>%
   mutate(pop_range = factor(pop_range, levels = c("0-10M", "10M-50M", "50M-100M", "100M-500M", "500M+")))
 
 ggplot(population_distribution, aes(x = pop_range, y = country_count, fill = continent)) +
-  geom_bar(stat = "identity", position = "dodge") +
+  geom_histogram(stat = "identity", position = "dodge") +
   scale_fill_brewer(palette = "Set2") +
   labs(title = "Country Population Distribution by Continent", x = "Population Range",
     y = "Number of Countries", fill = "Continent")
 
+
 # 3 - HISTOGRAM OF (CONTRY LEVEL) AVERAGE DISTANCES BETWEEN LOCATIONS AND
 # PORTS OR AIRPORTS BY CONTINENT 
-country_list <- unique(sf.pop$sov0name)
-st_intersection(sf.pop, sf.airports)
+
+sf.airports <- sf.airports %>%
+  select(name, geometry)
+
+sf.pop <- sf.pop%>%
+  select(name, sov0name, geometry)
+
+world <- world%>%
+  select(name_long, continent, geom)
+
+# Combine sf.pop with world to have country and continent for each city 
+cities_with_countries <- st_join(sf.pop, world, join = st_within)
+
+# Group cities by country - we will have MULTIPOINTS: each country has the 
+# points for the main cities within this country 
+multipoints_by_country <- cities_with_countries %>%
+  group_by(name_long) %>% 
+  summarise(geometry = st_combine(geometry)) %>% 
+  ungroup()
+
+# Associate each airport to his country 
+airports_with_countries <- st_join(sf.airports, world, join = st_within)
+
+# Extract and store the geometry of sf.airports (POINTS) and of world 
+# (MULTIPOLIGON) and combine them. It should return GEOMETRYCOLLECTIONS that 
+# have the countries borders and the points for the airport - here my problem
+# is that idk how to group by the county. If I was able to do something 
+# like I did above, then I would have computed the distances filtering 
+# for the country (having) GEOMETRYCOLLECTIONS with the borders of each country 
+# and inside all the points for airports and cities 
+airports_geom <- st_geometry(sf.airports)
+countries_geom <- st_geometry(world)
+airports_in_countries <- st_combine(c(airports_geom, countries_geom))
+
+
+
+
+
