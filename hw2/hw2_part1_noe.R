@@ -32,8 +32,8 @@ ggplot() +
                     values = c("Low" = "lightyellow", "Medium" = "lightgreen", "High" = "blue"))
 
 
-# 1.2 Using centroids: coloring cities instead of the whole country - still 
-# using colors depending on the population. Used the sf.pop from Natural Earth website.
+# 1.2 Coloring cities instead of the whole country - still using colors 
+# depending on the population. Used the sf.pop from Natural Earth website.
 
 # Population in absolute term 
 ggplot() +
