@@ -20,7 +20,8 @@ sf.world <- st_read("hw2/data/ne_10m_admin_0_countries", crs = 4326) %>%
 # 1.1 Plotting population in absolute terms
 ggplot() +
   geom_sf(data = sf.world, aes(fill = POP_EST)) +
-  scale_fill_gradient(name = "Population", low = "lightblue", high = "blue")
+  scale_fill_gradient(name = "Population", low = "lightblue", high = "blue") +
+  labs(title = "Total Population by Country", fill = "Population")
 
 # 1.2 Defining population by categories
 sf.world <- sf.world %>%
@@ -39,16 +40,15 @@ ggplot() +
   )
 
 # 2 - HISTOGRAM OF COUNTRY POPULATION DISTRIBUTION BY continent
-# Group South America and North America in America and remove Seven seas and Antarctica
+# Remove Seven seas and Antarctica
 # because they are NA
 sf.world <- sf.world %>%
-  mutate(
-    continent = case_when(
-      # continent %in% c("South America", "North America") ~ "America",
-      continent %in% c("Seven seas (open ocean)", "Antarctica") ~ NA_character_,
-      TRUE ~ continent
-    )
-  ) %>%
+  # mutate(
+  #  continent = case_when(
+  #    continent %in% c("Seven seas (open ocean)", "Antarctica") ~ NA_character_,
+  #    TRUE ~ continent
+  #  )
+  # ) %>%
   filter(!is.na(continent)) %>%
   st_make_valid() # Repair invalid polygons
 
@@ -119,9 +119,20 @@ cities_with_countries <- sf.world %>%
   st_as_sf() %>%
   drop_na()
 
+# 2. Create a small buffer around countries to catch coastal points
+# Buffer size in degrees (since CRS is 4326)
+buffer_size <- 0.01 # roughly 1km at the equator
+
 airports_with_countries <- sf.airports %>%
   select(name, geometry) %>%
-  st_join(sf.world %>% select(iso_a2, continent))
+  # Join with buffered country polygons
+  st_join(
+    sf.world %>%
+      select(iso_a2, continent) %>%
+      st_buffer(dist = buffer_size),
+    join = st_nearest_feature, # Use nearest feature instead of intersection
+    left = TRUE # Keep all airports
+  )
 
 # 2. Calculate closest airport distance per city, then average per country
 distances <- cities_with_countries %>%
@@ -160,6 +171,21 @@ ggplot(distances, aes(x = avg_closest_distance_km, fill = continent)) +
     x = "Average Distance to nearest Airport (km)", y = "Number of Populated Places", fill = "continent"
   ) +
   facet_wrap(~continent, scales = "free")
+
+
+# 3. Add diagnostic information
+problematic_airports <- airports_with_countries %>%
+  filter(is.na(iso_a2) | iso_a2 == "-99") %>%
+  mutate(
+    nearest_country = st_nearest_feature(geometry, sf.world),
+    distance_to_nearest = st_distance(geometry, sf.world[nearest_country, ], by_element = TRUE)
+  )
+
+# Print diagnostic information
+print(paste("Total airports:", nrow(airports_with_countries)))
+print(paste("Unmatched airports:", sum(is.na(airports_with_countries$iso_a2))))
+print("Sample of unmatched airports with distances to nearest country:")
+print(head(problematic_airports))
 
 
 # 3.2
