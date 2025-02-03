@@ -19,8 +19,8 @@ sf.world <- st_read("hw2/data/ne_10m_admin_0_countries", crs = 4326) %>%
 
 # 1.1 Plotting population in absolute terms
 ggplot() +
-  geom_sf(data = world, aes(fill = pop)) +
-  scale_fill_gradient(name = "POP_EST", low = "lightblue", high = "blue")
+  geom_sf(data = sf.world, aes(fill = POP_EST)) +
+  scale_fill_gradient(name = "Population", low = "lightblue", high = "blue")
 
 # 1.2 Defining population by categories
 sf.world <- sf.world %>%
@@ -44,7 +44,7 @@ ggplot() +
 sf.world <- sf.world %>%
   mutate(
     continent = case_when(
-      continent %in% c("South America", "North America") ~ "America",
+      # continent %in% c("South America", "North America") ~ "America",
       continent %in% c("Seven seas (open ocean)", "Antarctica") ~ NA_character_,
       TRUE ~ continent
     )
@@ -78,6 +78,23 @@ ggplot(population_distribution, aes(x = pop_range, y = country_count, fill = con
   labs(
     title = "Country Population Distribution by continent", x = "Population Range",
     y = "Number of Countries", fill = "continent"
+  )
+
+# Create a proper histogram using the continuous population data
+ggplot(sf.world, aes(x = POP_EST, fill = continent)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  scale_x_log10(labels = scales::comma) + # Use log scale due to large population range
+  facet_wrap(~continent, scales = "free_y") + # Separate panels for each continent
+  labs(
+    title = "Population Distribution by Continent",
+    x = "Population (log scale)",
+    y = "Count of Countries",
+    fill = "Continent"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", # Remove legend since we're using facets
+    plot.title = element_text(hjust = 0.5)
   )
 
 
