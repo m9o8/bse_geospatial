@@ -10,7 +10,7 @@ library(dplyr)
 
 # Data Loading
 
-sf.world <- world
+sf.world <- st_read("hw2/data/ne_10m_admin_0_countries/ne_10m_admin_0_countries.shp")
 sf.roads_africa <- st_read("hw2/data/ne_10m_roads")
 markets <- read_excel('hw2/data/porteous_data/1.-Price--Production--and-Population-Data/MktCoords.xlsx')
 
@@ -22,7 +22,7 @@ sf.markets <- st_as_sf(markets, coords = c('longitude', 'latitude'), crs = 'EPSG
 # Plot
 
 ggplot() +
-  geom_sf(data = sf.world %>% filter(continent == "Africa"),
+  geom_sf(data = sf.world %>% filter(REGION_UN == "Africa"),
           fill = "antiquewhite", color = "gray70") +
   geom_sf(data = sf.markets, color = "red", size = 3, shape = 21, fill = "blue") +
   theme_minimal() +
