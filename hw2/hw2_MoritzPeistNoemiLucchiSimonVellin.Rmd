@@ -55,7 +55,9 @@ library(tidyverse)
 # Spatial packages
 library(sf)
 library(spData)
+library(tidyverse)
 library(units)
+library(lwgeom)
 ```
 
 <hr>
@@ -64,23 +66,14 @@ library(units)
 
 ## Data Loading 
 
-In order to plot the distribution of the total population by country, we only need the R packages world, which contains both the geometries of the countries and the corresponding population. 
-
-## Data Wrangling 
-
-Given that we plot the population both in absolute terms and by categories — low, medium, and high — we need to define the population ranges for these categories. We classify countries with a population up to the 30th percentile as "Low population" countries, those with a population between the 30th and 70th percentiles as "Medium population" countries, and those in the top 30% of the population distribution as "High population" countries.
+In order to plot the distribution of the total population by country, we import data from [Natural Earth](https://www.naturalearthdata.com), specifically the countries dataset which contains both the geometries of the countries and the corresponding population. 
 
 ```{r}
 
-# Divide the population by categories
-world <- world %>%
-  mutate(pop_category = case_when(
-    pop <= quantile(pop, 0.30, na.rm = TRUE) ~ "Low",
-    pop <= quantile(pop, 0.70, na.rm = TRUE) ~ "Medium",
-    TRUE ~ "High"
-  ))
+sf.world <- st_read("data/ne_10m_admin_0_countries", crs = 4326)
 
 ```
+
 
 ## Plotting
 
@@ -88,15 +81,9 @@ world <- world %>%
 
 # Population in absolute terms
 ggplot() +
-  geom_sf(data = world, aes(fill = pop)) +
+  geom_sf(data = sf.world, aes(fill = POP_EST)) +
   scale_fill_gradient(name = "Population", low = "lightblue", high = "blue")
 
-# Population by categories 
-ggplot() +
-  geom_sf(data = world, aes(fill = pop_category), alpha = 0.7) +
-  scale_fill_manual(
-    name = "Population Category",
-    values = c("Low" = "lightyellow", "Medium" = "lightgreen", "High" = "blue"))
 
 ```
 
@@ -114,10 +101,10 @@ Finally, we ensure that the population ranges are ordered increasingly ("0-10M",
 
 ```{r}
 
+# Remove Seven seas and Antarctica because they are NA
 world <- world %>%
   mutate(
     continent = case_when(
-      continent %in% c("South America", "North America") ~ "America",
       continent %in% c("Seven seas (open ocean)", "Antarctica") ~ NA_character_,
       TRUE ~ continent
     )
@@ -168,8 +155,8 @@ In addition to the R package world, we incorporate data from [Natural Earth](htt
 
 ```{r}
 
-sf.airports <- st_read("hw2/data/ne_10m_airports", crs = 4326)
-sf.pop <- st_read("hw2/data/ne_10m_populated_places_simple", crs = 4326)
+sf.airports <- st_read("data/ne_10m_airports", crs = 4326)
+sf.pop <- st_read("data/ne_10m_populated_places_simple", crs = 4326)
 
 ```
 
