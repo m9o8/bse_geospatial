@@ -3,11 +3,16 @@ library(sf)
 library(spData)
 library(tidyverse)
 library(units)
+library(lwgeom)
 
 sf.airports <- st_read("hw2/data/ne_10m_airports", crs = 4326)
 sf.pop <- st_read("hw2/data/ne_10m_populated_places_simple", crs = 4326)
 sf.world <- st_read("hw2/data/ne_10m_admin_0_countries", crs = 4326) %>%
-  st_make_valid() # Repair invalid polygons
+  # Rename columns in the world dataset to make joining / operations easier
+  rename(
+    iso_a2 = ISO_A2,
+    continent = CONTINENT
+  )
 
 # 1- TOTAL POPULATION BY COUNTRY: Using only the package spData that has both the
 # geometry of every country and the population
@@ -33,19 +38,19 @@ ggplot() +
     values = c("Low" = "lightyellow", "Medium" = "lightgreen", "High" = "blue")
   )
 
-
-# 2 - HISTOGRAM OF COUNTRY POPULATION DISTRIBUTION BY CONTINENT
+# 2 - HISTOGRAM OF COUNTRY POPULATION DISTRIBUTION BY continent
 # Group South America and North America in America and remove Seven seas and Antarctica
 # because they are NA
 sf.world <- sf.world %>%
   mutate(
-    CONTINENT = case_when(
-      CONTINENT %in% c("South America", "North America") ~ "America",
-      CONTINENT %in% c("Seven seas (open ocean)", "Antarctica") ~ NA_character_,
-      TRUE ~ CONTINENT
+    continent = case_when(
+      continent %in% c("South America", "North America") ~ "America",
+      continent %in% c("Seven seas (open ocean)", "Antarctica") ~ NA_character_,
+      TRUE ~ continent
     )
   ) %>%
-  filter(!is.na(CONTINENT))
+  filter(!is.na(continent)) %>%
+  st_make_valid() # Repair invalid polygons
 
 # Create the population ranges as factors
 sf.world <- sf.world %>%
@@ -62,38 +67,28 @@ sf.world <- sf.world %>%
 
 # Calculate the number of countries per range + country
 population_distribution <- sf.world %>%
-  group_by(CONTINENT, pop_range) %>%
+  group_by(continent, pop_range) %>%
   summarise(country_count = n(), .groups = "drop")
 
-# Order by ranges
-# population_distribution <- population_distribution %>%
-#  mutate(pop_range = factor(pop_range, levels = c("0-10M", "10M-50M", "50M-100M", "100M-500M", "500M+")))
 
 # Plotting
-ggplot(population_distribution, aes(x = pop_range, y = country_count, fill = CONTINENT)) +
+ggplot(population_distribution, aes(x = pop_range, y = country_count, fill = continent)) +
   geom_histogram(stat = "identity", position = "dodge") +
   scale_fill_brewer(palette = "Set2") +
   labs(
-    title = "Country Population Distribution by Continent", x = "Population Range",
-    y = "Number of Countries", fill = "Continent"
+    title = "Country Population Distribution by continent", x = "Population Range",
+    y = "Number of Countries", fill = "continent"
   )
 
 
 # 3 - HISTOGRAM OF (CONTRY LEVEL) AVERAGE DISTANCES BETWEEN LOCATIONS AND
-# PORTS OR AIRPORTS BY CONTINENT
+# PORTS OR AIRPORTS BY continent
 
 # Assuming we have the initial dataframes stored locally
 
 # Take the world, join airports, then cities, then group by and calculate distance
 # Problem is: One sf object can only contain 1 geometry at the time
 # Therefore, we create two distinct dataframes and then calculate the distances between both
-
-# Rename columns in the world dataset to make joining easier
-sf.world <- sf.world %>%
-  rename(
-    iso_a2 = ISO_A2,
-    continent = CONTINENT
-  )
 
 # 3.1
 # 1. Prepare cities and airports with country metadata
@@ -144,8 +139,8 @@ ggplot(distances, aes(x = avg_closest_distance_km, fill = continent)) +
   geom_histogram(bins = 30, position = "dodge") +
   scale_fill_brewer(palette = "Set2") +
   labs(
-    title = "Average Distance Between Locations and Airports by Continent",
-    x = "Average Distance to nearest Airport (km)", y = "Number of Populated Places", fill = "Continent"
+    title = "Average Distance Between Locations and Airports by continent",
+    x = "Average Distance to nearest Airport (km)", y = "Number of Populated Places", fill = "continent"
   ) +
   facet_wrap(~continent, scales = "free")
 
@@ -197,7 +192,7 @@ ggplot(distances_ranges, aes(x = distance_range, fill = continent)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(
     title = "Average Distance Between Locations and Airport by Ranges",
-    x = "Average Distance in Ranges", y = "Number of Countries", fill = "Continent"
+    x = "Average Distance in Ranges", y = "Number of Countries", fill = "continent"
   )
 
 ###################### Helper ##############################
