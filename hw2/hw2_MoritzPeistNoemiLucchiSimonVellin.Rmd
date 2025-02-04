@@ -364,12 +364,35 @@ ggplot(distances_ranges, aes(x = distance_range, fill = continent)) +
 
 # Exercise 2: Porteuos data
 
-In this exercise, we use the [Porteous dataset]() for plotting.
+This analysis explores agricultural market data in Africa using the Porteous dataset, which investigates trade costs and their impact on agricultural markets. The study examines the relationship between market locations, transportation infrastructure, and agricultural product prices across African countries.
+
+The analysis is structured in three main parts:
+1. Visualization of market locations across Africa
+2. Analysis of markets' accessibility through distance calculations
+3. Investigation of price-distance relationships for different transportation modes
+
+This work builds on Porteous (2019), who studied how trade costs affect agricultural storage and trade patterns in Africa. Understanding these relationships is crucial for identifying potential barriers to trade and market efficiency in African agricultural markets.
 
 
 ## 2.1. Map of markets in Africa
 
+This section creates a visualization of market locations across Africa. The analysis combines three key geographical datasets:
+- Administrative boundaries of African countries
+- Road network data for transportation infrastructure
+- Market location coordinates from the Porteous dataset
+
+The resulting map will help us understand the spatial distribution of agricultural markets and their relationship to national boundaries. This visualization is particularly important for identifying potential clusters of markets and areas that might be underserved.
+
 ### Data Loading
+
+The data loading process integrates three essential geographical datasets using appropriate coordinate reference systems (CRS). We use EPSG:4326, which is the standard WGS84 geographic coordinate system, ensuring consistent spatial representation across all datasets. The data includes:
+
+1. World administrative boundaries for defining African countries
+2. African road network data for understanding transportation infrastructure
+3. Market coordinates from the Porteous dataset, converted to spatial features
+
+Converting the market coordinates to spatial features (sf) allows us to perform spatial operations and create meaningful visualizations. The careful attention to coordinate systems is crucial for accurate geographical analysis.
+
 
 ```{r}
 # Clean enviornment first
@@ -386,6 +409,12 @@ sf.markets <- st_as_sf(
 ```
 
 ### Plotting
+
+The plotting phase creates a clear visualization of market locations within their geographical context. We use a layered approach to build the map, starting with country boundaries and adding market locations. The aesthetic choices are deliberate:
+- Antiquewhite fill for countries provides a neutral background
+- Gray borders help define country boundaries without overshadowing the main data
+- Red and blue markers for markets ensure visibility while distinguishing them from the background
+- Minimal theme removes unnecessary visual elements to focus attention on the data
 
 
 ```{r}
@@ -412,7 +441,21 @@ ggplot() +
 
 ## 2.2. Minimum distances
 
+This section calculates the accessibility of markets by measuring their proximity to key transportation infrastructure. We examine three critical distance metrics:
+
+1. Distance to coast: Important for international trade and port access
+2. Distance to roads: Crucial for domestic distribution and market integration
+3. Distance to airports: Relevant for high-value or time-sensitive agricultural products
+
+These measurements help quantify the isolation or connectivity of each market, which can significantly impact trading costs and market efficiency. The analysis uses spatial analysis techniques to calculate the shortest distances between markets and each type of infrastructure.
+
 ### Data Loading
+
+This subsection expands our dataset by incorporating additional infrastructure information. We load two new spatial datasets:
+1. Airport locations across the globe
+2. Coastline geometries
+
+These datasets complement our existing market and road data, allowing us to compute comprehensive accessibility metrics. The careful organization of these spatial datasets ensures efficient processing in subsequent analysis steps.
 
 ```{r}
 # Load data
@@ -421,6 +464,14 @@ sf.coast <- st_read("data/ne_10m_coastline", crs = "EPSG:4326")
 ```
 
 ### Data Wrangling
+
+This crucial data processing step involves several sophisticated spatial operations. The process:
+1. Isolates African data to improve computational efficiency
+2. Ensures geometric validity of spatial features
+3. Calculates distance matrices between markets and various infrastructure points
+4. Processes these matrices to find minimum distances
+
+The use of st_distance() creates matrices that capture all possible combinations of distances, from which we extract the minimum values. This approach ensures we identify the truly nearest infrastructure points for each market.
 
 ```{r}
 # We isolate the African airports from our global data sets to stay efficient.
@@ -461,9 +512,24 @@ print(summary(sf.markets))
 
 <hr>
 
-## 2.3. Scatter plots
+## 2.3. Scatter plots - Price-Distance Relationships
+
+This section investigates how market prices relate to infrastructure accessibility. The analysis:
+
+1. Processes raw price data from the Porteous dataset
+2. Calculates average prices for different crops
+3. Creates scatter plots to visualize price-distance relationships
+
+The resulting visualizations help us understand whether more isolated markets (those farther from transportation infrastructure) tend to have higher or lower prices. This relationship is crucial for:
+- Understanding market integration
+- Identifying potential barriers to trade
+- Assessing the impact of infrastructure on market efficiency
+
+Each scatter plot includes trend lines by crop type, allowing us to observe whether different agricultural products show distinct patterns in their price-distance relationships.
 
 ### Data Loading
+
+Here we incorporate price data from the Porteous dataset, specifically from the cost parameter estimation component. This data provides crucial economic information that we'll relate to our spatial measurements. The price data represents actual market conditions and will help us understand how geography influences market dynamics.
 
 ```{r}
 prices <- read_excel(
@@ -472,6 +538,13 @@ prices <- read_excel(
 ```
 
 ### Data Wrangling
+
+This phase processes the raw price data to create meaningful economic metrics. The operations include:
+1. Handling zero values by converting them to NA to avoid skewing averages
+2. Calculating average prices across different time periods
+3. Joining price data with spatial market data
+
+This careful data preparation ensures that our subsequent analysis accurately represents the relationship between prices and geographical factors. The use of NA for zero values is particularly important for maintaining data integrity.
 
 ```{r}
 # Calculate average price
@@ -483,6 +556,13 @@ sf.marketprices <- sf.markets %>% left_join(prices, by = "mktcode")
 ```
 
 ### Plotting
+
+The final visualization phase creates three sophisticated scatter plots that reveal relationships between prices and infrastructure accessibility. Each plot incorporates:
+1. Individual data points colored by crop type to show product-specific patterns
+2. Trend lines to highlight overall relationships
+3. Appropriate axis labels and titles for clear interpretation
+
+The grid arrangement of plots facilitates easy comparison of how different types of infrastructure accessibility relate to market prices. The use of alpha transparency helps manage overlapping points, while maintaining visual clarity.
 
 ```{r}
 # (i) Average Price vs. Minimum Distance to Coast
