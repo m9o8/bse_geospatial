@@ -112,7 +112,7 @@ First, we filter out countries without a continent and repair invalid polygons i
 Finally, we ensure that the population ranges are ordered increasingly ("0-10M", "10M-50M", "50M-100M", "100M-500M", "500M+") by using the R factor datatype.
 
 ```{r}
-# Remove Seven seas and Antarctica because they are NA
+# Filter countries with NA continents and repair invalid polygons
 sf.world <- sf.world %>%
   filter(!is.na(continent)) %>%
   # Repair invalid polygons
@@ -157,6 +157,7 @@ ggplot(population_distribution, aes(x = pop_range, y = country_count, fill = con
 We plot the same data but with a more detailed view to better understand the distribution of countries by population size within each continent as asked by the task. However, we exclude Seven Seas and Antarctica as they contribute relatively little information. Moreover, we use a log-scale by population size, since country populations vary hugely, also by continent as this allows us to better visualize the data.
 
 ```{r}
+# Filter out Seven Seas and Antarctica
 sf.world_filt <- sf.world %>%
   mutate(
     continent = case_when(
@@ -269,6 +270,7 @@ distances <- cities_with_countries %>%
 Now, we plot the histogram of country level average distances between locations and airports by continent - as asked for by the exercise. Once again we filter out the Seven Seas and Antarctica as they do not contribute much information and since only 16 airports are impacted by this anyways.
 
 ```{r}
+# Filter out Seven Seas and Antarctica
 distances_filt <- distances %>%
   mutate(
     continent = case_when(
@@ -303,6 +305,8 @@ Since we have these issues, let's look at the airports also in a more coarse-gra
 # 3. Calculate average distances at country level. With this approach, instead of
 # computing the closest airport distance per city and then averaging per country,
 # we compute all the distances within a country and then we average them.
+
+# Basically, same code as before, so no extensive comments
 distances_country <- cities_with_countries %>%
   group_by(continent, iso_a2) %>% # Removed ne_id to group at country level
   summarise(
@@ -367,6 +371,7 @@ ggplot(distances_ranges, aes(x = distance_range, fill = continent)) +
 This analysis explores agricultural market data in Africa using the Porteous dataset, which investigates trade costs and their impact on agricultural markets. The study examines the relationship between market locations, transportation infrastructure, and agricultural product prices across African countries.
 
 The analysis is structured in three main parts:
+
 1. Visualization of market locations across Africa
 2. Analysis of markets' accessibility through distance calculations
 3. Investigation of price-distance relationships for different transportation modes
@@ -377,6 +382,7 @@ This work builds on Porteous (2019), who studied how trade costs affect agricult
 ## 2.1. Map of markets in Africa
 
 This section creates a visualization of market locations across Africa. The analysis combines three key geographical datasets:
+
 - Administrative boundaries of African countries
 - Road network data for transportation infrastructure
 - Market location coordinates from the Porteous dataset
@@ -411,6 +417,7 @@ sf.markets <- st_as_sf(
 ### Plotting
 
 The plotting phase creates a clear visualization of market locations within their geographical context. We use a layered approach to build the map, starting with country boundaries and adding market locations. The aesthetic choices are deliberate:
+
 - Antiquewhite fill for countries provides a neutral background
 - Gray borders help define country boundaries without overshadowing the main data
 - Red and blue markers for markets ensure visibility while distinguishing them from the background
@@ -452,6 +459,7 @@ These measurements help quantify the isolation or connectivity of each market, w
 ### Data Loading
 
 This subsection expands our dataset by incorporating additional infrastructure information. We load two new spatial datasets:
+
 1. Airport locations across the globe
 2. Coastline geometries
 
@@ -466,6 +474,7 @@ sf.coast <- st_read("data/ne_10m_coastline", crs = "EPSG:4326")
 ### Data Wrangling
 
 This crucial data processing step involves several sophisticated spatial operations. The process:
+
 1. Isolates African data to improve computational efficiency
 2. Ensures geometric validity of spatial features
 3. Calculates distance matrices between markets and various infrastructure points
@@ -521,6 +530,7 @@ This section investigates how market prices relate to infrastructure accessibili
 3. Creates scatter plots to visualize price-distance relationships
 
 The resulting visualizations help us understand whether more isolated markets (those farther from transportation infrastructure) tend to have higher or lower prices. This relationship is crucial for:
+
 - Understanding market integration
 - Identifying potential barriers to trade
 - Assessing the impact of infrastructure on market efficiency
@@ -540,6 +550,7 @@ prices <- read_excel(
 ### Data Wrangling
 
 This phase processes the raw price data to create meaningful economic metrics. The operations include:
+
 1. Handling zero values by converting them to NA to avoid skewing averages
 2. Calculating average prices across different time periods
 3. Joining price data with spatial market data
@@ -558,6 +569,7 @@ sf.marketprices <- sf.markets %>% left_join(prices, by = "mktcode")
 ### Plotting
 
 The final visualization phase creates three sophisticated scatter plots that reveal relationships between prices and infrastructure accessibility. Each plot incorporates:
+
 1. Individual data points colored by crop type to show product-specific patterns
 2. Trend lines to highlight overall relationships
 3. Appropriate axis labels and titles for clear interpretation

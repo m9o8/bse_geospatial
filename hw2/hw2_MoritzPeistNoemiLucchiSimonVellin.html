@@ -524,7 +524,7 @@ This gives us a summary of the distribution of countries by population
 size within each continent. Finally, we ensure that the population
 ranges are ordered increasingly (“0-10M”, “10M-50M”, “50M-100M”,
 “100M-500M”, “500M+”) by using the R factor datatype.</p>
-<pre class="r"><code># Remove Seven seas and Antarctica because they are NA
+<pre class="r"><code># Filter countries with NA continents and repair invalid polygons
 sf.world &lt;- sf.world %&gt;%
   filter(!is.na(continent)) %&gt;%
   # Repair invalid polygons
@@ -569,7 +569,8 @@ Antarctica as they contribute relatively little information. Moreover,
 we use a log-scale by population size, since country populations vary
 hugely, also by continent as this allows us to better visualize the
 data.</p>
-<pre class="r"><code>sf.world_filt &lt;- sf.world %&gt;%
+<pre class="r"><code># Filter out Seven Seas and Antarctica
+sf.world_filt &lt;- sf.world %&gt;%
   mutate(
     continent = case_when(
       continent %in% c(&quot;Seven seas (open ocean)&quot;, &quot;Antarctica&quot;) ~ NA_character_,
@@ -721,7 +722,8 @@ locations and airports by continent - as asked for by the exercise. Once
 again we filter out the Seven Seas and Antarctica as they do not
 contribute much information and since only 16 airports are impacted by
 this anyways.</p>
-<pre class="r"><code>distances_filt &lt;- distances %&gt;%
+<pre class="r"><code># Filter out Seven Seas and Antarctica
+distances_filt &lt;- distances %&gt;%
   mutate(
     continent = case_when(
       continent %in% c(&quot;Seven seas (open ocean)&quot;, &quot;Antarctica&quot;) ~ NA_character_,
@@ -763,6 +765,8 @@ again we exclude Seven Seas and Antarctica).</p>
 <pre class="r"><code># 3. Calculate average distances at country level. With this approach, instead of
 # computing the closest airport distance per city and then averaging per country,
 # we compute all the distances within a country and then we average them.
+
+# Basically, same code as before, so no extensive comments
 distances_country &lt;- cities_with_countries %&gt;%
   group_by(continent, iso_a2) %&gt;% # Removed ne_id to group at country level
   summarise(
@@ -828,10 +832,14 @@ Porteous dataset, which investigates trade costs and their impact on
 agricultural markets. The study examines the relationship between market
 locations, transportation infrastructure, and agricultural product
 prices across African countries.</p>
-<p>The analysis is structured in three main parts: 1. Visualization of
-market locations across Africa 2. Analysis of markets’ accessibility
-through distance calculations 3. Investigation of price-distance
-relationships for different transportation modes</p>
+<p>The analysis is structured in three main parts:</p>
+<ol style="list-style-type: decimal">
+<li>Visualization of market locations across Africa</li>
+<li>Analysis of markets’ accessibility through distance
+calculations</li>
+<li>Investigation of price-distance relationships for different
+transportation modes</li>
+</ol>
 <p>This work builds on Porteous (2019), who studied how trade costs
 affect agricultural storage and trade patterns in Africa. Understanding
 these relationships is crucial for identifying potential barriers to
@@ -839,10 +847,12 @@ trade and market efficiency in African agricultural markets.</p>
 <div id="map-of-markets-in-africa" class="section level2">
 <h2>2.1. Map of markets in Africa</h2>
 <p>This section creates a visualization of market locations across
-Africa. The analysis combines three key geographical datasets: -
-Administrative boundaries of African countries - Road network data for
-transportation infrastructure - Market location coordinates from the
-Porteous dataset</p>
+Africa. The analysis combines three key geographical datasets:</p>
+<ul>
+<li>Administrative boundaries of African countries</li>
+<li>Road network data for transportation infrastructure</li>
+<li>Market location coordinates from the Porteous dataset</li>
+</ul>
 <p>The resulting map will help us understand the spatial distribution of
 agricultural markets and their relationship to national boundaries. This
 visualization is particularly important for identifying potential
@@ -898,12 +908,16 @@ sf.world &lt;- st_read(&quot;data/ne_10m_admin_0_countries&quot;, crs = &quot;EP
 <p>The plotting phase creates a clear visualization of market locations
 within their geographical context. We use a layered approach to build
 the map, starting with country boundaries and adding market locations.
-The aesthetic choices are deliberate: - Antiquewhite fill for countries
-provides a neutral background - Gray borders help define country
-boundaries without overshadowing the main data - Red and blue markers
-for markets ensure visibility while distinguishing them from the
-background - Minimal theme removes unnecessary visual elements to focus
-attention on the data</p>
+The aesthetic choices are deliberate:</p>
+<ul>
+<li>Antiquewhite fill for countries provides a neutral background</li>
+<li>Gray borders help define country boundaries without overshadowing
+the main data</li>
+<li>Red and blue markers for markets ensure visibility while
+distinguishing them from the background</li>
+<li>Minimal theme removes unnecessary visual elements to focus attention
+on the data</li>
+</ul>
 <pre class="r"><code># Plot
 ggplot() +
   geom_sf(
@@ -946,8 +960,11 @@ infrastructure.</p>
 <div id="data-loading-4" class="section level3">
 <h3>Data Loading</h3>
 <p>This subsection expands our dataset by incorporating additional
-infrastructure information. We load two new spatial datasets: 1. Airport
-locations across the globe 2. Coastline geometries</p>
+infrastructure information. We load two new spatial datasets:</p>
+<ol style="list-style-type: decimal">
+<li>Airport locations across the globe</li>
+<li>Coastline geometries</li>
+</ol>
 <p>These datasets complement our existing market and road data, allowing
 us to compute comprehensive accessibility metrics. The careful
 organization of these spatial datasets ensures efficient processing in
@@ -975,11 +992,14 @@ sf.airports &lt;- st_read(&quot;data/ne_10m_airports&quot;, crs = &quot;EPSG:432
 <div id="data-wrangling-2" class="section level3">
 <h3>Data Wrangling</h3>
 <p>This crucial data processing step involves several sophisticated
-spatial operations. The process: 1. Isolates African data to improve
-computational efficiency 2. Ensures geometric validity of spatial
-features 3. Calculates distance matrices between markets and various
-infrastructure points 4. Processes these matrices to find minimum
-distances</p>
+spatial operations. The process:</p>
+<ol style="list-style-type: decimal">
+<li>Isolates African data to improve computational efficiency</li>
+<li>Ensures geometric validity of spatial features</li>
+<li>Calculates distance matrices between markets and various
+infrastructure points</li>
+<li>Processes these matrices to find minimum distances</li>
+</ol>
 <p>The use of st_distance() creates matrices that capture all possible
 combinations of distances, from which we extract the minimum values.
 This approach ensures we identify the truly nearest infrastructure
@@ -1046,9 +1066,12 @@ accessibility. The analysis:</p>
 </ol>
 <p>The resulting visualizations help us understand whether more isolated
 markets (those farther from transportation infrastructure) tend to have
-higher or lower prices. This relationship is crucial for: -
-Understanding market integration - Identifying potential barriers to
-trade - Assessing the impact of infrastructure on market efficiency</p>
+higher or lower prices. This relationship is crucial for:</p>
+<ul>
+<li>Understanding market integration</li>
+<li>Identifying potential barriers to trade</li>
+<li>Assessing the impact of infrastructure on market efficiency</li>
+</ul>
 <p>Each scatter plot includes trend lines by crop type, allowing us to
 observe whether different agricultural products show distinct patterns
 in their price-distance relationships.</p>
@@ -1066,10 +1089,13 @@ will help us understand how geography influences market dynamics.</p>
 <div id="data-wrangling-3" class="section level3">
 <h3>Data Wrangling</h3>
 <p>This phase processes the raw price data to create meaningful economic
-metrics. The operations include: 1. Handling zero values by converting
-them to NA to avoid skewing averages 2. Calculating average prices
-across different time periods 3. Joining price data with spatial market
-data</p>
+metrics. The operations include:</p>
+<ol style="list-style-type: decimal">
+<li>Handling zero values by converting them to NA to avoid skewing
+averages</li>
+<li>Calculating average prices across different time periods</li>
+<li>Joining price data with spatial market data</li>
+</ol>
 <p>This careful data preparation ensures that our subsequent analysis
 accurately represents the relationship between prices and geographical
 factors. The use of NA for zero values is particularly important for
@@ -1085,10 +1111,13 @@ sf.marketprices &lt;- sf.markets %&gt;% left_join(prices, by = &quot;mktcode&quo
 <h3>Plotting</h3>
 <p>The final visualization phase creates three sophisticated scatter
 plots that reveal relationships between prices and infrastructure
-accessibility. Each plot incorporates: 1. Individual data points colored
-by crop type to show product-specific patterns 2. Trend lines to
-highlight overall relationships 3. Appropriate axis labels and titles
-for clear interpretation</p>
+accessibility. Each plot incorporates:</p>
+<ol style="list-style-type: decimal">
+<li>Individual data points colored by crop type to show product-specific
+patterns</li>
+<li>Trend lines to highlight overall relationships</li>
+<li>Appropriate axis labels and titles for clear interpretation</li>
+</ol>
 <p>The grid arrangement of plots facilitates easy comparison of how
 different types of infrastructure accessibility relate to market prices.
 The use of alpha transparency helps manage overlapping points, while
