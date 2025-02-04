@@ -366,7 +366,7 @@ ggplot(distances_ranges, aes(x = distance_range, fill = continent)) +
 
 <hr>
 
-# Exercise 2: Porteuos data
+# Exercise 2: Porteous data
 
 This analysis explores agricultural market data in Africa using the Porteous dataset, which investigates trade costs and their impact on agricultural markets. The study examines the relationship between market locations, transportation infrastructure, and agricultural product prices across African countries.
 
@@ -483,7 +483,7 @@ This crucial data processing step involves several sophisticated spatial operati
 The use of st_distance() creates matrices that capture all possible combinations of distances, from which we extract the minimum values. This approach ensures we identify the truly nearest infrastructure points for each market.
 
 ```{r}
-# We isolate the African airports from our global data sets to stay efficient.
+# We isolate the African airports from our global data sets to stay efficient
 sf.africa <- sf.world %>%
   filter(REGION_UN == "Africa") %>%
   filter(!st_is_valid(.)) %>%
@@ -492,7 +492,7 @@ sf.africa <- sf.world %>%
 # Filter airports in Africa
 sf.airports_africa <- sf.airports %>% st_filter(sf.africa)
 
-# Data Wrangling - st_distance() returns a matrix with one row per market and one column per coast segment.
+# Data Wrangling - st_distance() returns a matrix with one row per market and one column per coast segment
 
 # (i) Distance to Nearest Coast
 dist_to_coast <- st_distance(sf.markets, sf.coast)
