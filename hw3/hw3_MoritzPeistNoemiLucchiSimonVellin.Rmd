@@ -44,7 +44,7 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 
 # Methodology & general code
 
-...
+Throughout this notebook, we will follow the same approach. We begin with Data Loading, where we import and prepare our necessary datasets. We then move to Data Manipulation, where we process and transform our data into the appropriate format for analysis. Finally, in the Visualization section, we create plots to effectively communicate our findings. 
 
 First we load the needed packages:
 
@@ -76,7 +76,7 @@ The .nc file with data about the SPEI index has been downloaded from this [websi
 ```{r}
 
 # Import SPEI index 
-spei_index <- rast("/Users/noemilucchi/Desktop/spei01.nc")
+spei_index <- rast("/hw3/data/spei01.nc")
 
 # Import US regions
 us_states <- spData::us_states
