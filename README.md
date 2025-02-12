@@ -14,3 +14,4 @@ The following repository contains folder for each project and submission, i.e.:
 
 - [`hw1`](hw1): Homework 1 submission (Paper replications)
 - [`hw2`](hw2): Homework 2 submission (World map visualizations)
+- [`hw3`](hw3): Homework 3 submission (Raster operations)
