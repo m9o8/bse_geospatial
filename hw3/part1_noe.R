@@ -22,54 +22,42 @@ spei_subset <- spei_index[[valid_dates]]
 # Remove from 'dates' the unnecessary dates
 dates <- dates[valid_dates]
 
-# Zonal statistics to compute the mean (each row is a country and each column is a date)
-zonal_stats <- exact_extract(
+# Zonal statistics directly by region (grouping states by region first)
+regions_sf <- us_states %>%
+  group_by(REGION) %>%
+  summarise(geometry = st_union(geometry))
+
+# Calculate SPEI means directly for regions
+zonal_stats_regional <- exact_extract(
   spei_subset,
-  us_states,
+  regions_sf,
   fun = "mean"
 )
 
-# Convert the wide format panel to long format panel and add state/region identifiers
-# This is necessary to compute the yearly mean per country and then the yearly mean per region
-spei_long <- zonal_stats %>%
+# Convert to long format with regional identifiers
+spei_regional_direct <- zonal_stats_regional %>%
   as.data.frame() %>%
-  # Convert from wide to long format
+  mutate(region = regions_sf$REGION) %>%
   pivot_longer(
-    cols = everything(),
+    cols = -region,
     names_to = "time_index",
     values_to = "spei"
   ) %>%
-  # Add state and region identifiers, plus temporal information
   mutate(
-    state = rep(us_states$NAME, each = length(dates)),
-    region = rep(us_states$REGION, each = length(dates)),
-    date = rep(dates, times = nrow(us_states)),
-    year = year(date),
-    month = month(date)
+    date = rep(dates, times = nrow(regions_sf)),
+    year = year(date)
   ) %>%
-  select(state, region, year, month, spei)
-
-# Compute the yearly mean for each state
-spei_state_annual <- spei_long %>%
-  group_by(state, region, year) %>%
-  summarise(
-    mean_spei_state = mean(spei, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-# Compute the yearly mean for each region
-spei_regional <- spei_state_annual %>%
   group_by(region, year) %>%
   summarise(
-    mean_spei_region = mean(mean_spei_state, na.rm = TRUE),
+    mean_spei_region = mean(spei, na.rm = TRUE),
     .groups = "drop"
   )
 
 # Plotting
-ggplot(spei_regional, aes(x = year, y = mean_spei_region, color = region)) +
+ggplot(spei_regional_direct, aes(x = year, y = mean_spei_region, color = region)) +
   geom_line() +
   geom_smooth(
-    data = spei_regional, aes(x = year, y = mean_spei_region),
+    data = spei_regional_direct, aes(x = year, y = mean_spei_region),
     method = "loess", color = "blue", se = TRUE
   ) +
   scale_color_manual(values = c("red", "green", "turquoise", "purple")) +
