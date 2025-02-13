@@ -5,13 +5,13 @@ author:
 - Noemi Lucchi
 - Simon Vellin
 output:
+  html_notebook:
+    toc: true
+  pdf_document:
+    toc: true
   html_document:
     toc: true
     df_print: paged
-  pdf_document:
-    toc: true
-  html_notebook:
-    toc: true
 ---
 
 <hr>
@@ -330,8 +330,8 @@ To calculate the distances between the 10 top populated cities in Spain, and rep
   
 ```{r}
 # Load populated cities and roads
-places <- st_read("/hw3/data/ne_10m_populated_places")
-roads <- st_read("/hw3/data/ne_10m_roads")
+places <- st_read("/hw3/data/ex2/ne_10m_populated_places")
+roads <- st_read("/hw3/data/ex2/ne_10m_roads")
 ```
 
 ## Data Wrangling
