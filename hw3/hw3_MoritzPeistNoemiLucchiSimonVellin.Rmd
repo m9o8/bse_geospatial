@@ -1,13 +1,16 @@
 ---
 title: "Geospatial - Assignment 3"
-author: 
+author:
 - Moritz Peist
 - Noemi Lucchi
 - Simon Vellin
 output:
-  html_notebook:
+  html_document:
     toc: true
+    df_print: paged
   pdf_document:
+    toc: true
+  html_notebook:
     toc: true
 ---
 
@@ -43,8 +46,8 @@ knitr::opts_chunk$set(
   fig.width = 16,
   fig.height = 8,
   fig.retina = 2,
-  dpi = 300,
-  dev = "svg"
+  dpi = 300
+  # dev = "svg"
 )
 ```
 
@@ -191,7 +194,11 @@ ggplot(spei_regional, aes(x = year, y = mean_spei_region, color = region, group 
 
 In comparison the first graph looked as follows:
 
-![Figure 1](data/ex1/raster09.png)
+<div style="text-align: center">
+  
+  ![Figure 1](data/ex1/raster09.png)
+
+</div>
 
 <hr>
 
@@ -201,10 +208,18 @@ In comparison the first graph looked as follows:
 
 In comparison the first map looked as follows:
 
-![Map 1](data/ex2/raster07.png)
+<div style="text-align: center">
+
+  ![Map 1](data/ex2/raster07.png)
+
+</div>
 
 ...
 
 and the second graph as follows:
 
-![Figure 2](data/ex2/raster08.png)
+<div style="text-align: center">
+
+  ![Map 2](data/ex2/raster08.png)
+
+</div>
