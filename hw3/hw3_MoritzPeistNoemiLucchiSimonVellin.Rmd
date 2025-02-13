@@ -5,13 +5,13 @@ author:
 - Noemi Lucchi
 - Simon Vellin
 output:
-  html_notebook:
-    toc: true
-  pdf_document:
-    toc: true
   html_document:
     toc: true
     df_print: paged
+  pdf_document:
+    toc: true
+  html_notebook:
+    toc: true
 ---
 
 <hr>
@@ -65,10 +65,6 @@ First we load the needed packages:
 
 ```{r}
 # Package Loading
-# Core data manipulation and visualization
-library(tidyverse) # Data manipulation and visualization suite
-library(ggplot2) # Advanced plotting (included in tidyverse)
-
 # Spatial data handling
 library(sf) # Simple Features for spatial vector data
 library(spData) # Spatial datasets
@@ -81,6 +77,10 @@ library(units) # Unit handling and conversion
 library(lwgeom) # Lightweight geometry operations
 library(gridExtra) # Arranging multiple plots
 library(readxl) # Excel file reading
+
+# Core data manipulation and visualization
+library(tidyverse) # Data manipulation and visualization suite
+library(ggplot2) # Advanced plotting (included in tidyverse)
 ```
 
 <hr>
@@ -330,8 +330,8 @@ To calculate the distances between the 10 top populated cities in Spain, and rep
   
 ```{r}
 # Load populated cities and roads
-places <- st_read("/hw3/data/ex2/ne_10m_populated_places")
-roads <- st_read("/hw3/data/ex2/ne_10m_roads")
+places <- st_read("data/ex2/ne_10m_populated_places")
+roads <- st_read("data/ex2/ne_10m_roads")
 ```
 
 ## Data Wrangling
