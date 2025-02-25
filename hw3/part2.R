@@ -46,7 +46,8 @@ road_values[!is.na(road_values)] <- 1
 values(road_raster) <- road_values
 
 # Create transition matrix for distance calculation
-tr_matrix <- transition(raster(road_raster),
+tr_matrix <- transition(
+  raster(road_raster),
   transitionFunction = mean,
   directions = 8
 )
@@ -60,7 +61,8 @@ colnames(dist_matrix) <- cities_planar$NAME
 for (i in 1:n_cities) {
   for (j in 1:n_cities) {
     if (i < j) {
-      path <- shortestPath(tr_matrix,
+      path <- shortestPath(
+        tr_matrix,
         origin = as_Spatial(cities_planar[i, ]),
         goal = as_Spatial(cities_planar[j, ]),
         output = "SpatialLines"
@@ -87,14 +89,20 @@ madrid_vigo <- spain_top_10_cities %>%
 ggplot() +
   geom_sf(data = st_transform(spain, 4326), fill = "lightgray") +
   geom_sf(data = st_transform(spain_roads, 4326), color = "black", size = 0.3) +
-  geom_sf(data = st_transform(spain_top_10_cities, 4326), size = 1, color = "black") +
+  geom_sf(
+    data = st_transform(spain_top_10_cities, 4326),
+    size = 1,
+    color = "black"
+  ) +
   geom_sf(
     data = st_transform(madrid_vigo %>% filter(NAME == "Madrid"), 4326),
-    aes(shape = "Madrid", color = "Madrid"), size = 3
+    aes(shape = "Madrid", color = "Madrid"),
+    size = 3
   ) +
   geom_sf(
     data = st_transform(madrid_vigo %>% filter(NAME == "Vigo"), 4326),
-    aes(shape = "Vigo", color = "Vigo"), size = 3
+    aes(shape = "Vigo", color = "Vigo"),
+    size = 3
   ) +
   scale_color_manual(
     name = "Cities",
