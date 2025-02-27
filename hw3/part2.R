@@ -7,7 +7,12 @@ library(tidyverse)
 library(gdistance)
 library(spData)
 library(raster)
+library(ggplot2)
 
+
+---------
+# PART A
+  
 # Load the geometry of Spain and filter for continental Spain only
 spain <- world %>%
   filter(name_long == "Spain") %>%
@@ -112,3 +117,61 @@ ggplot() +
     name = "Cities",
     values = c("Madrid" = 16, "Vigo" = 17)
   )
+---------
+# PART B
+
+# Extract city names from the top 10 cities (excluding Madrid and Vigo themselves for isolation analysis)
+other_cities <- spain_top_10_cities$NAME[!spain_top_10_cities$NAME %in% c("Madrid", "Vigo")]
+
+# Extract distances from Madrid and Virgo to other cities
+madrid_distances <- dist_matrix["Madrid", other_cities]
+vigo_distances <- dist_matrix["Vigo", other_cities]
+
+# Calculate summary statistics for isolation
+madrid_summary <- summary(madrid_distances)
+vigo_summary <- summary(vigo_distances)
+
+# Print summary statistics to compare isolation
+cat("\nSummary of distances from Madrid to other top 10 cities (km):\n")
+print(round(madrid_summary, 1))
+cat("\nSummary of distances from Vigo to other top 10 cities (km):\n")
+print(round(vigo_summary, 1))
+
+# Calculate average distances to assess isolation
+madrid_avg_distance <- mean(madrid_distances)
+vigo_avg_distance <- mean(vigo_distances)
+
+cat("\nAverage distance from Madrid to other cities:", round(madrid_avg_distance, 1), "km\n")
+cat("Average distance from Vigo to other cities:", round(vigo_avg_distance, 1), "km\n")
+
+# Determine which city is more isolated (higher average distance indicates more isolation)
+if (madrid_avg_distance > vigo_avg_distance) {
+  cat("Madrid appears more isolated based on average distance.\n")
+} else if (vigo_avg_distance > madrid_avg_distance) {
+  cat("Vigo appears more isolated based on average distance.\n")
+} else {
+  cat("Madrid and Vigo have similar isolation based on average distance.\n")
+}
+
+# Create a data frame with distances for plotting
+density_data <- data.frame(
+  City = c(rep("Madrid", length(madrid_distances)), rep("Vigo", length(vigo_distances))),
+  Distance = c(madrid_distances, vigo_distances)
+)
+
+# Plot smoothed density distributions using geom_density()
+density_plot <- ggplot(density_data, aes(x = Distance, color = City, fill = City)) +
+  geom_density(alpha = 0.3) +  # Add transparency for overlap
+  scale_color_manual(values = c("Madrid" = "red", "Vigo" = "turquoise")) +
+  scale_fill_manual(values = c("Madrid" = "red", "Vigo" = "turquoise")) +
+  labs(
+    title = "Smoothed Density Distributions of Distances",
+    x = "Distance (km)",
+    y = "Density",
+    color = "City",
+    fill = "City"
+  ) +
+  theme_minimal()
+
+# Display the plot
+print(density_plot)
