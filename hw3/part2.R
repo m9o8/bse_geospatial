@@ -118,7 +118,7 @@ ggplot() +
     values = c("Madrid" = 16, "Vigo" = 17)
   )
 ---------
-# PART B
+# PART B - Logical Approach
 
 # Extract city names from the top 10 cities (excluding Madrid and Vigo themselves for isolation analysis)
 other_cities <- spain_top_10_cities$NAME[!spain_top_10_cities$NAME %in% c("Madrid", "Vigo")]
@@ -175,3 +175,36 @@ density_plot <- ggplot(density_data, aes(x = Distance, color = City, fill = City
 
 # Display the plot
 print(density_plot)
+
+---------
+# PART B - Alternative Approach
+
+# Extract distances for Madrid and Vigo to all cities, including themselves (self-distance = 0)
+madrid_distances_all <- dist_matrix["Madrid", ]
+vigo_distances_all <- dist_matrix["Vigo", ]
+
+# Create a data frame with distances for plotting, including self-distances
+density_data_all <- data.frame(
+  City = c(rep("Madrid", length(madrid_distances_all)), rep("Vigo", length(vigo_distances_all))),
+  Distance = c(madrid_distances_all, vigo_distances_all)
+)
+
+# Plot smoothed density distributions using geom_density(), including self-distances
+density_plot_all <- ggplot(density_data_all, aes(x = Distance, color = City, fill = City)) +
+  geom_density(alpha = 0.3) +  # Add transparency for overlap
+  scale_color_manual(values = c("Madrid" = "red", "Vigo" = "turquoise"), labels = c("Madrid", "Vigo")) +
+  scale_fill_manual(values = c("Madrid" = "red", "Vigo" = "turquoise"), labels = c("Madrid", "Vigo")) +
+  labs(
+    x = "distance",
+    y = "density",
+    color = "origin",
+    fill = "origin"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8)
+  )
+
+# Display the plot
+print(density_plot_all)
