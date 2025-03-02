@@ -1,16 +1,16 @@
 ---
 title: "Geospatial - Assignment 3"
 author:
-- Moritz Peist
-- Noemi Lucchi
-- Simon Vellin
+  - Moritz Peist
+  - Noemi Lucchi
+  - Simon Vellin
 output:
   html_document:
     toc: true
     df_print: paged
-  pdf_document:
-    toc: true
   html_notebook:
+    toc: true
+  pdf_document:
     toc: true
 ---
 
@@ -34,6 +34,7 @@ h4.author, h4.date {
 }
 ```
 
+
 ```{r setup, include=FALSE}
 # Load required package for SVG
 library(ragg)
@@ -47,7 +48,7 @@ knitr::opts_chunk$set(
   fig.height = 8,
   fig.retina = 2,
   dpi = 300
-  # dev = "svg"
+  #dev = "svg"
 )
 ```
 
@@ -326,9 +327,10 @@ While both approaches yield similar results due to the linear nature of averagin
 
 ## Data Loading 
 
-To calculate the distances between the 10 top populated cities in Spain, and represent the roads within the continental Spain, we used data from the [Natural Earth website](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/). Precisely, we loaded:
-  - ne_10m_populated_places shapefile for the most populated cities 
-  - ne_10m_roads for the streets 
+To calculate the distances between the 10 top populated cities in Spain, and represent the roads within continental Spain. We used data from the [Natural Earth website](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/). Precisely, we loaded:
+
+- ne_10m_populated_places shapefile for the most populated cities 
+- ne_10m_roads for the streets 
   
 ```{r}
 # Load populated cities and roads
@@ -338,7 +340,7 @@ roads <- st_read("data/ex2/ne_10m_roads")
 
 ## Data Wrangling
 
-From the R package spData, we use the world dataset to extract the geometry of Spain, filtering only for continental Spain. Then, from the dataset containing the most populated cities, we extract only the cities in Spain, sort them in decreasing order of population, and retain only the top 10. Finally, from these top 10 cities, we extract Madrid and Vigo, which will be used in the plot.
+From the R package spData, we use the world dataset to extract the geometry of Spain, filtering only for continental Spain i.e., we exclude roads outside continental Spain which seems to not have happened in the initial graph were roads overflow frontiers. Then, from the dataset containing the most populated cities, we extract only the cities in Spain, sort them in decreasing order of population, and retain only the top 10. Finally, from these top 10 cities, we extract Madrid and Vigo, which will be used in the plot.
 
 ```{r}
 # Filter for continental Spain only
@@ -439,7 +441,7 @@ ggplot() +
   ) +
   scale_color_manual(
     name = "Cities",
-    values = c("Madrid" = "red", "Vigo" = "turquoise")
+    values = c("Madrid" = "red", "Vigo" = "blue")
   ) +
   scale_shape_manual(
     name = "Cities",
@@ -458,17 +460,30 @@ In comparison the first map looked as follows:
 
 ## Data Wrangling
 
-Using the distance matrix calculated in Part A, we now assess the isolation of Madrid and Vigo by analyzing their bilateral distances to the other top 10 most populated cities in Spain. We begin by extracting the distances for Madrid and Vigo.
+Using the distance matrix calculated in Part A, we now assess the isolation of Madrid and Vigo by analyzing their bilateral distances to the other top 10 most populated cities in Spain. We begin by extracting the distances for Madrid and Vigo. Note, however, that for the average distance calculation, that we exclude the cities from the calculations with themselves to exclude the self-distance of 0.
 
 ```{r}
 # Extract city names from the top 10 cities (excluding Madrid and Vigo for isolation analysis)
-other_cities <- spain_top_10_cities$NAME[!spain_top_10_cities$NAME %in% c("Madrid", "Vigo")]
+df_dist <- as.data.frame(dist_matrix) %>%
+  rownames_to_column(var = "origin") %>%
+  # Set up long format of the matrix
+  gather(key = "destination", value = "distance", -origin) %>%
+  # Exclude all other cities
+  filter(origin %in% c("Madrid", "Vigo")) %>% 
+  # Order first by origin, then by destination
+  arrange(origin, destination)
+
+# Now exclude the self-distances
+df_dist_wo_self <- df_dist %>%
+  filter(origin != destination)
 
 # Extract distances from Madrid to other cities
-madrid_distances <- dist_matrix["Madrid", other_cities]
+madrid_distances <- df_dist_wo_self %>%
+  pull(distance)
 
 # Extract distances from Vigo to other cities
-vigo_distances <- dist_matrix["Vigo", other_cities]
+vigo_distances <- df_dist_wo_self %>%
+  pull(distance)
 ```
 
 ## Analysis
@@ -508,14 +523,8 @@ if (madrid_avg_distance > vigo_avg_distance) {
 To further explore the isolation of Madrid and Vigo, we create smoothed density distributions of their distances to the other top 10 cities. This visualization helps us understand the spread and concentration of distances, where a distribution with a wider spread or higher density at greater distances suggests greater isolation. We use geom_density() to plot the distributions, with Madrid in red and Vigo in turquoise, matching the style of the reference plot.
 
 ```{r}
-# Create a data frame with distances for plotting
-density_data <- data.frame(
-  City = c(rep("Madrid", length(madrid_distances)), rep("Vigo", length(vigo_distances))),
-  Distance = c(madrid_distances, vigo_distances)
-)
-
 # Plot smoothed density distributions using geom_density()
-density_plot <- ggplot(density_data, aes(x = Distance, color = City, fill = City)) +
+density_plot <- ggplot(df_dist_wo_self, aes(x = distance, color = origin, fill = origin)) +
   geom_density(alpha = 0.3) +  # Add transparency for overlap
   scale_color_manual(values = c("Madrid" = "red", "Vigo" = "turquoise")) +
   scale_fill_manual(values = c("Madrid" = "red", "Vigo" = "turquoise")) +
@@ -545,18 +554,8 @@ In comparison the second graph looked as follows:
 Although we think it seems logical to exclude Madrid and Virgo from the distance calculations, the reference plot seem to include them, as displayed by the noticeable density at x=0 for both cities. In this section, we computed the same plot but with "self-distances" included.
 
 ```{r}
-# Extract distances for Madrid and Vigo to all cities, including themselves (self-distance = 0)
-madrid_distances_all <- dist_matrix["Madrid", ]
-vigo_distances_all <- dist_matrix["Vigo", ]
-
-# Create a data frame with distances for plotting, including self-distances
-density_data_all <- data.frame(
-  City = c(rep("Madrid", length(madrid_distances_all)), rep("Vigo", length(vigo_distances_all))),
-  Distance = c(madrid_distances_all, vigo_distances_all)
-)
-
 # Plot smoothed density distributions using geom_density(), including self-distances
-density_plot_all <- ggplot(density_data_all, aes(x = Distance, color = City, fill = City)) +
+density_plot_all <- ggplot(df_dist, aes(x = distance, color = origin, fill = origin)) +
   geom_density(alpha = 0.3) +  # Add transparency for overlap
   scale_color_manual(values = c("Madrid" = "red", "Vigo" = "turquoise"), labels = c("Madrid", "Vigo")) +
   scale_fill_manual(values = c("Madrid" = "red", "Vigo" = "turquoise"), labels = c("Madrid", "Vigo")) +
@@ -575,5 +574,3 @@ density_plot_all <- ggplot(density_data_all, aes(x = Distance, color = City, fil
 # Display the plot
 print(density_plot_all)
 ```
-
-</div>
