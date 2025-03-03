@@ -106,8 +106,7 @@ The analysis uses two main data sources:
 
 ## Data Loading 
 
-To analyze the SPEI (Standardized Precipitation Evapotranspiration Index) trends across US regions over the past 50 years, we need the NetCDF file (.nc) containing SPEI raster data and the US geographic data from spData package.
-The .nc file with data about the SPEI index has been downloaded from this [website](https://digital.csic.es/handle/10261/268088).
+To analyze the SPEI (Standardized Precipitation Evapotranspiration Index) trends across US regions over the past 50 years, we need the NetCDF file (.nc) containing SPEI raster data and the US geographic data from spData package. The .nc file with data about the SPEI index has been downloaded from this [website](https://digital.csic.es/handle/10261/268088).
 
 ```{r}
 # Import SPEI index
@@ -271,7 +270,7 @@ spei_regional_direct <- zonal_stats_regional %>%
 
 ### Plotting
 
-Next we plot the results and though the differences to our previous approach are minimal, the direct mean approach is more efficient and should be more what we are looking for:
+Next we plot the results and though the differences to our previous approach are minimal. However, the direct mean approach is more efficient and should be more what we are looking for:
 
 ```{r}
 # Plotting
@@ -311,7 +310,16 @@ The plots show:
 - Time period: 1965-2015
 - Y-axis range: -1 to 1 (drought to wet conditions)
 
-While both approaches yield similar results due to the linear nature of averaging, the direct regional calculation is methodologically preferred for spatial climate data analysis. In comparison the first graph to be replicated looked as follows:
+While both approaches yield similar results due to the linear nature of averaging, the direct regional calculation is methodologically preferred for spatial climate data analysis for several key reasons:
+
+1. Spatial Weighting: The mean-of-means approach gives equal weight to each state regardless of its size, potentially overrepresenting smaller states in regional averages. The direct approach properly weights each grid cell based on its actual area contribution to the region.
+2. Boundary Effects: State boundaries are political, not climatological. The mean-of-means approach artificially segments climate patterns along state lines before aggregation, while the direct approach preserves natural climate continuity across regions.
+3. Statistical Accuracy: Multiple averaging steps in the mean-of-means approach can introduce compounding biases. The direct calculation minimizes this by reducing the number of aggregation steps.
+4. Computational Efficiency: The direct approach requires fewer calculation steps and less memory, making it more efficient for large datasets.
+
+While both methods yield similar results in this case (due to the linear nature of averaging and relatively uniform spatial distribution), the direct regional calculation better represents the true spatial characteristics of climate data.
+
+In comparison the first graph to be replicated looked as follows:
 
 <div style="text-align: center">
   
@@ -319,18 +327,32 @@ While both approaches yield similar results due to the linear nature of averagin
 
 </div>
 
+## Discussion of Plot Differences
+
+After comparing both visualizations, the most likely reasons for the differences between our plot and the reference plot are:
+
+- Different SPEI Timescale: Our code specifically uses spei01.nc (1-month SPEI), while the original plot likely uses a longer timescale index such as SPEI-12 or SPEI-24. Longer timescales produce smoother lines as they capture longer-term drought conditions rather than monthly fluctuations.
+- Temporal Aggregation Method: Our code computes simple annual averages from monthly data, whereas the original plot might use a different aggregation approach (e.g., weighted seasonal averages or rolling averages) that reduces volatility.
+- Smoothing Parameters: The original plot appears to use more aggressive smoothing for both regional lines and the trend line. Our geom_smooth() with default LOESS parameters may use different span or degree settings than the original.
+- Data Pre-processing: The original may have applied additional data cleaning steps such as outlier removal or drought-specific thresholding that aren't present in our implementation.
+- Spatial Aggregation Differences: The original plot might use different regional boundary definitions or apply population-weighted rather than area-weighted averaging.
+- Year Range Subsetting: Despite both claiming 1965-2015, the exact start/end dates might differ slightly, affecting trend visualization, especially at the endpoints.
+- Different SPEI Version: The SPEI calculation methodology itself has evolved over time, and different versions of the dataset might be used.
+
+The most significant factor is likely the SPEI timescale difference, as this would fundamentally change the volatility patterns visible in the visualization.
+
 <hr>
 
 # Exercise 2: Transportation Centrality
 
-# Part A
+## Part A
 
-## Data Loading 
+### Data Loading 
 
 To calculate the distances between the 10 top populated cities in Spain, and represent the roads within continental Spain. We used data from the [Natural Earth website](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/). Precisely, we loaded:
 
-- ne_10m_populated_places shapefile for the most populated cities 
-- ne_10m_roads for the streets 
+- ne_10m_populated_places: for the most populated cities 
+- ne_10m_roads: for the streets 
   
 ```{r}
 # Load populated cities and roads
@@ -338,7 +360,7 @@ places <- st_read("data/ex2/ne_10m_populated_places")
 roads <- st_read("data/ex2/ne_10m_roads")
 ```
 
-## Data Wrangling
+### Data Wrangling
 
 From the R package spData, we use the world dataset to extract the geometry of Spain, filtering only for continental Spain i.e., we exclude roads outside continental Spain which seems to not have happened in the initial graph were roads overflow frontiers. Then, from the dataset containing the most populated cities, we extract only the cities in Spain, sort them in decreasing order of population, and retain only the top 10. Finally, from these top 10 cities, we extract Madrid and Vigo, which will be used in the plot.
 
@@ -360,7 +382,7 @@ madrid_vigo <- spain_top_10_cities %>%
   filter(NAME %in% c("Madrid", "Vigo"))
 ```
 
-## Methodological Approach
+### Methodological Approach
 
 First, we transform the CRS from EPSG:4326 to EPSG:3035, as the former uses latitude and longitude, which would lead to incorrect distance calculations in kilometers. Next, we intersect the road network with Spain’s boundaries to restrict the analysis to roads that are actually within Spain. We then create an empty raster over Spain, set a high resolution, and define the CRS as EPSG:3035 for the same reason mentioned earlier. After that, we generate the friction surface by assigning a value of 1 to cells that contain roads and 100 to cells that do not. This ensures that areas without roads have higher friction, influencing the computation of the shortest path between cities. Subsequently, we compute the transition matrix and, finally, calculate and print the distance matrix, which includes all pairwise distances between the top 10 most populated Spanish cities.
 
@@ -400,7 +422,7 @@ colnames(dist_matrix) <- cities_planar$NAME
 
 for (i in 1:n_cities) {
   for (j in 1:n_cities) {
-    if (i < j) {
+    if (i < j) { # Only calculate the upper triangle and mirror
       path <- shortestPath(tr_matrix,
         origin = as_Spatial(cities_planar[i, ]),
         goal = as_Spatial(cities_planar[j, ]),
@@ -411,6 +433,7 @@ for (i in 1:n_cities) {
       # Calculate distance in kilometers
       dist <- as.numeric(st_length(path_sf)) / 1000
       dist_matrix[i, j] <- dist
+      # Mirror the distance in lower triangle
       dist_matrix[j, i] <- dist
     }
   }
@@ -421,7 +444,7 @@ print("Distances between cities (km):")
 print(round(dist_matrix, 1))
 ```
 
-## Plotting 
+### Plotting - Map of Spain with Roads and Cities
 
 After these manipulations, we can plot continental Spain with its roads, highlighting Madrid and Vigo, as shown in the reference plot.
 
@@ -446,6 +469,10 @@ ggplot() +
   scale_shape_manual(
     name = "Cities",
     values = c("Madrid" = 16, "Vigo" = 17)
+  ) +
+  theme(
+    # Make background white
+    panel.background = element_rect(fill = "white")
   )
 ```
 
@@ -454,21 +481,22 @@ In comparison the first map looked as follows:
 <div style="text-align: center">
 
   ![Map 1](data/ex2/raster07.png)
+
 </div>
 
-# Part B - Logical Approach
+## Part B - Distance Density Plots
 
-## Data Wrangling
+### Data Wrangling
 
 Using the distance matrix calculated in Part A, we now assess the isolation of Madrid and Vigo by analyzing their bilateral distances to the other top 10 most populated cities in Spain. We begin by extracting the distances for Madrid and Vigo. Note, however, that for the average distance calculation, that we exclude the cities from the calculations with themselves to exclude the self-distance of 0.
 
 ```{r}
-# Extract city names from the top 10 cities (excluding Madrid and Vigo for isolation analysis)
+# Extract city names from the top 10 cities in long format
 df_dist <- as.data.frame(dist_matrix) %>%
   rownames_to_column(var = "origin") %>%
   # Set up long format of the matrix
   gather(key = "destination", value = "distance", -origin) %>%
-  # Exclude all other cities
+  # Exclude all other cities from origins
   filter(origin %in% c("Madrid", "Vigo")) %>% 
   # Order first by origin, then by destination
   arrange(origin, destination)
@@ -479,14 +507,16 @@ df_dist_wo_self <- df_dist %>%
 
 # Extract distances from Madrid to other cities
 madrid_distances <- df_dist_wo_self %>%
+  filter(origin == "Madrid") %>%
   pull(distance)
 
 # Extract distances from Vigo to other cities
 vigo_distances <- df_dist_wo_self %>%
+  filter(origin == "Vigo") %>%
   pull(distance)
 ```
 
-## Analysis
+### Analysis
 
 Isolation is determined by comparing the average distances from each city to the others, where a higher average distance indicates greater isolation. We compute summary statistics, and calculate the average distance for each city to make a quantitative comparison.
 
@@ -518,9 +548,9 @@ if (madrid_avg_distance > vigo_avg_distance) {
 }
 ```
 
-## Plotting
+### Plotting - Distance Density Plot (excluding self-distances)
 
-To further explore the isolation of Madrid and Vigo, we create smoothed density distributions of their distances to the other top 10 cities. This visualization helps us understand the spread and concentration of distances, where a distribution with a wider spread or higher density at greater distances suggests greater isolation. We use geom_density() to plot the distributions, with Madrid in red and Vigo in turquoise, matching the style of the reference plot.
+To further explore the isolation of Madrid and Vigo, we create smoothed density distributions of their distances to the other top 10 cities. This visualization helps us understand the spread and concentration of distances, where a distribution with a wider spread or higher density at greater distances suggests greater isolation. We use geom_density() to plot the distributions, with Madrid in red and Vigo in turquoise, matching the style of the reference plot. However, we exclude the self-distance of 0.
 
 ```{r}
 # Plot smoothed density distributions using geom_density()
@@ -541,7 +571,7 @@ density_plot <- ggplot(df_dist_wo_self, aes(x = distance, color = origin, fill =
 print(density_plot)
 ```
 
-In comparison the second graph looked as follows:
+In comparison the second reference graph looked as follows:
 
 <div style="text-align: center">
 
@@ -549,9 +579,9 @@ In comparison the second graph looked as follows:
 
 </div>
 
-# Part B - Alternative Approach
+### Plotting - Distance Density Plot (including self-distances)
 
-Although we think it seems logical to exclude Madrid and Virgo from the distance calculations, the reference plot seem to include them, as displayed by the noticeable density at x=0 for both cities. In this section, we computed the same plot but with "self-distances" included.
+Although we think it seems logical to exclude the self-distances of Madrid and Vigo from the distance calculations, the reference plot seems to include them, as displayed by the noticeable density at x=0 for both cities. Thus, in this section, we compute the same plot but with "self-distances" included.
 
 ```{r}
 # Plot smoothed density distributions using geom_density(), including self-distances
@@ -574,3 +604,39 @@ density_plot_all <- ggplot(df_dist, aes(x = distance, color = origin, fill = ori
 # Display the plot
 print(density_plot_all)
 ```
+
+## Discussion of Plot Differences: Self-Distances and Calculation Parameters
+
+### Self-Distances Methodological Considerations
+
+The decision to include or exclude self-distances (city to itself) significantly impacts isolation analysis:
+
+- **Excluding self-distances** (preferred for isolation studies) focuses on inter-city relationships, avoids artificial density spikes, and aligns with network analysis conventions.
+  
+- **Including self-distances** might be justified when measuring overall accessibility rather than isolation specifically, or when considering all possible origin-destination pairs in a transportation system.
+
+### Geospatial Parameters Affecting Results
+
+The differences between our plot and the reference are likely due to our choice of calculation parameters:
+
+1. **Raster Resolution** (5000 units): Finer resolution would capture road networks more precisely but at computational cost.
+
+2. **Friction Surface Values** (1:100 ratio): This strongly influences path selection and could dramatically change distances if the reference used different values.
+
+3. **Road Network Data**: Differences in the Natural Earth road dataset completeness or classification.
+
+4. **Transition Matrix Configuration**: The 8-direction setting affects possible path trajectories.
+
+5. **Continental Spain Definition**: Different methods for isolating mainland Spain could affect which roads are included.
+
+### Density Visualization Differences
+
+Additional technical factors in the visualization itself:
+
+1. **Bandwidth Parameter**: Different smoothing parameters in `geom_density()` would change curve shapes.
+
+2. **Alpha Transparency and Color Settings**: Affect visual appearance of overlapping areas.
+
+3. **Kernel Function**: Different mathematical functions for density estimation produce different curves.
+
+Despite these differences, both plots support the same conclusion that Vigo is more isolated than Madrid, with Vigo's distribution showing consistently greater distances to other population centers.
