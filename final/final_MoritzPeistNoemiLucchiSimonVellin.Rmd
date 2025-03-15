@@ -1,0 +1,388 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Load packages
+
+```{r Packages}
+library(data.table)   # For faster data manipulation
+library(tidyverse)    # For data manipulation and visualization
+library(sf)           # For spatial data handling
+library(leaflet)      # For interactive maps
+library(leaflet.extras) # For additional leaflet features
+library(mapview)      # For easier map visualization
+library(tmap)         # For thematic maps
+library(tigris)       # For US road networks
+library(future)       # For parallel processing
+library(future.apply) # For parallel processing with apply functions
+
+# Create directories if they don't exist
+if (!dir.exists("./data/tigris")) {
+  dir.create("./data/tigris", recursive = TRUE)
+}
+
+# Set custom cache directory (optional)
+options(tigris_cache_dir = "./data/tigris")
+# Configure tigris to use caching
+options(tigris_use_cache = TRUE)
+```
+
+
+# Set-up convenience functions for parallel processing (as data is quite large)
+```{r Parallel Buffering}
+# Function to create buffers in batches with proper projection
+create_buffers_in_batches <- function(sf_object, buffer_dist, batch_size = 500) {
+  # First, reproject to an appropriate projected CRS for the region
+  # For California, UTM Zone 10N (EPSG:26910) or 11N (EPSG:26911) works well
+  # If we're unsure about your region, a web mercator projection (3857) is a reasonable default
+  message("Reprojecting data to a meter-based CRS...")
+  sf_object_projected <- st_transform(sf_object, 3310)  # Web Mercator
+  
+  n_features <- nrow(sf_object_projected)
+  n_batches <- ceiling(n_features / batch_size)
+  
+  # Create empty list to store results
+  buffer_list <- vector("list", n_batches)
+  
+  # Process in batches
+  for (i in 1:n_batches) {
+    start_idx <- (i-1) * batch_size + 1
+    end_idx <- min(i * batch_size, n_features)
+    
+    cat(sprintf("Processing batch %d of %d (features %d to %d)\n", 
+                i, n_batches, start_idx, end_idx))
+    
+    # Extract batch
+    batch <- sf_object_projected[start_idx:end_idx, ]
+    
+    # Create buffer (with parallel processing within sf)
+    buffer_list[[i]] <- st_buffer(batch, dist = buffer_dist)
+  }
+  
+  # Combine results
+  result <- do.call(rbind, buffer_list)
+  
+  # Reproject back to original CRS if needed
+  message("Reprojecting results back to original CRS...")
+  st_transform(result, st_crs(sf_object))
+}
+```
+
+
+
+Load data (filter for California for now to limit data set size)
+
+```{r Data Load Accidents}
+# Efficient approach
+df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
+  # Filter date range to 2016-2021
+  as.Date(Start_Time) >= as.Date("2016-01-01") & 
+  as.Date(Start_Time) <= as.Date("2021-12-31") & 
+  # And California
+  State == "CA"
+][, `:=`(
+  # Add year, quarter, month columns
+  year = data.table::year(Start_Time),
+  quarter = data.table::quarter(Start_Time),
+  month = data.table::month(Start_Time),
+  # Calculate duration (assuming End_Time exists in the dataset)
+  duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+)] %>% 
+  as_tibble()  # Convert to tibble only at the end for performance
+```
+
+```{r Data Load Constructions}
+df.const <- fread("data/us_constructions/US_constructions_Dec21.csv")[
+  # Filter date range to 2016-2021
+  as.Date(Start_Time) >= as.Date("2016-01-01") & 
+  as.Date(Start_Time) <= as.Date("2021-12-31") & 
+    # And California
+  State == "CA"
+][, `:=`(
+  # Add year, quarter, month columns
+  year = year(Start_Time),
+  quarter = quarter(Start_Time),
+  month = month(Start_Time),
+  # Calculate duration (assuming End_Time exists in the dataset)
+  duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+)] %>% 
+  as_tibble()  # Convert to tibble only at the end for performance
+```
+
+Convert dataframes to sf objects
+
+```{r Geospatial Data}
+# Convert accident data to sf object
+df.acc.sf <- df.acc %>%
+  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+  st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326)
+
+# Convert construction data to sf object
+df.const.sf <- df.const %>%
+  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+  st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326)
+```
+
+
+```{r Data Load Roads}
+# Get US roads (this can be slow for the entire US, so we might want to limit by state)
+
+# First get all counties in California
+ca_counties <- counties("CA", year = 2021)
+
+# Then get roads for each county
+ca_roads_list <- lapply(ca_counties$COUNTYFP, function(county_code) {
+  roads("CA", county = county_code, year = 2021)
+})
+
+# Optionally combine all county road data into one object
+ca_roads <- do.call(rbind, ca_roads_list)
+```
+
+
+```{r Static Maps}
+# Static map for Accidents with year coloring
+# First, store your plot in a variable
+ca_plot <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = df.acc.sf %>% filter(State == "CA"), 
+          aes(color = factor(year)), alpha = 0.7, size = 0.5) +
+  scale_color_viridis_d(name = "Year") +  # Use viridis color palette for discrete values
+  theme_minimal() +
+  labs(title = "US Road Accidents by Year (2016-2021)") +
+  theme(legend.position = "bottom")
+print(ca_plot)
+# Then save it using ggsave
+#ggsave(filename = "imgs/california_accidents.png", 
+#       plot = ca_plot,
+#       width = 10, # width in inches
+#       height = 8, # height in inches
+#       dpi = 300)  # resolution
+
+# Construction sites map with year coloring
+# First, store our plot in a variable
+ca_const_plot <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = df.const.sf %>% filter(State == "CA"), 
+          aes(color = factor(year)), alpha = 0.7, size = 0.5) +
+  scale_color_viridis_d(name = "Year") +  # Use viridis color palette for discrete values
+  theme_minimal() +
+  labs(title = "US Construction Sites by Year (2016-2021)") +
+  theme(legend.position = "bottom")
+print(ca_const_plot)
+# Then save it using ggsave
+#ggsave(filename = "imgs/california_construction.png", 
+#       plot = ca_const_plot,
+#       width = 10, # width in inches
+#       height = 8, # height in inches
+#       dpi = 300)  # resolution
+```
+
+
+## Heatmaps - interactive
+
+
+```{r Interactive Maps I}
+# For interactive maps (often better for large datasets)
+# Accidents map
+accident_map <- leaflet() %>%
+  addTiles() %>%
+  addHeatmap(data = df.acc.sf, 
+             intensity = ~1,
+             radius = 8, 
+             blur = 10) %>%
+  setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>% # Center to CA
+  setMaxBounds(lng1 = -124.6, lat1 = 42.0,    # Northwest corner of CA
+               lng2 = -114.1, lat2 = 32.5)    # Southeast corner of CA
+
+# Display maps
+accident_map
+```
+
+
+
+```{r Interactive Maps II}
+# Construction sites map with California focus and bounds constraints
+construction_map <- leaflet() %>%
+  addTiles() %>%
+  addHeatmap(data = df.const.sf, 
+             intensity = ~1,
+             radius = 8, 
+             blur = 10,
+             gradient = c("yellow", "orange", "red")) %>%
+  setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%  # Center on California
+  setMaxBounds(lng1 = -124.6, lat1 = 42.0,    # Northwest corner of CA
+               lng2 = -114.1, lat2 = 32.5)    # Southeast corner of CA
+
+# Display the map
+construction_map
+```
+
+## Buffer zone analysis
+
+```{r Buffer Zone Analysis}
+# Set up parallel processing
+future::plan(future::multisession, workers = parallel::detectCores() - 1)
+
+# Set sf to use parallel processing
+sf_use_s2(FALSE)  # Disable S2 spherical geometry
+cores <- parallel::detectCores() - 1
+
+# Process each dataset with batching
+cat("Creating point buffers...\n")
+const_buffers <- create_buffers_in_batches(df.const.sf, buffer_dist = 1000, batch_size = 500)
+
+# Return to sequential processing
+future::plan(future::sequential)
+sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
+
+# Find accidents within construction zones
+# Use a spatial index and parallel processing
+plan(multisession, workers = parallel::detectCores() - 1)  # Use parallel processing
+
+accidents_in_construction <- df.acc.sf %>%
+  st_join(ca_const_buffers, join = st_within, prepared = TRUE)
+
+# Reset to sequential processing when done
+plan(sequential)
+
+# Count accidents per construction zone
+accidents_per_zone <- accidents_in_construction %>%
+  group_by(ID) %>%  # Grouping by the ID column
+  summarize(accident_count = n())
+
+# Visualize construction zones with accident counts
+# First, store our plot in a variable
+accident_zones_plot <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = accidents_per_zone, aes(fill = accident_count), alpha = 0.7) +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  labs(title = "Accident Counts within Construction Zones (2016-2021)")
+
+print(accident_zones_plot)
+
+# Then save it using ggsave
+#ggsave(filename = "imgs/accident_counts_construction_zones.png", 
+#       plot = accident_zones_plot,
+#       width = 10, # width in inches
+#       height = 8, # height in inches
+#       dpi = 300)  # resolution
+```
+
+
+Advanced construction sites: 
+
+```{r SF linestring}
+# Convert construction data to linestring sf object
+df.const.lines <- df.const %>%
+  filter(!is.na(Start_Lat) & !is.na(Start_Lng) & !is.na(End_Lat) & !is.na(End_Lng)) %>%
+  mutate(geometry = pmap(list(Start_Lng, Start_Lat, End_Lng, End_Lat), 
+                         function(start_lng, start_lat, end_lng, end_lat) {
+                           coords <- matrix(c(start_lng, start_lat, 
+                                             end_lng, end_lat), 
+                                           ncol = 2, byrow = TRUE)
+                           st_linestring(coords)
+                         })) %>%
+  st_sf(crs = 4326)
+```
+
+
+```{r Maps with Construction Lines}
+# Static map with construction line segments
+ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = df.const.lines %>% filter(State == "CA"), 
+          color = "orange", size = 1) +
+  theme_minimal() +
+  labs(title = "US Construction Segments (2016-2021)")
+
+# Interactive map with construction segments focused on California
+construction_segment_map <- leaflet() %>%
+  addTiles() %>%
+  addPolylines(data = df.const.lines, 
+               color = "orange",
+               weight = 3,
+               opacity = 0.7,
+               popup = ~paste("ID:", ID, "<br>Duration:", Duration)) %>%
+  setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%  # Center on California
+  setMaxBounds(lng1 = -124.6, lat1 = 42.0,    # Northwest corner of CA
+               lng2 = -114.1, lat2 = 32.5)    # Southeast corner of CA
+               
+# Display the map
+construction_segment_map
+```
+
+```{r Construction Impact Analysis with Buffers}
+# Set up parallel processing
+future::plan(future::multisession, workers = parallel::detectCores() - 1)
+
+# Set sf to use parallel processing
+sf_use_s2(FALSE)  # Disable S2 spherical geometry
+cores <- parallel::detectCores() - 1
+
+cat("Creating line segment buffers...\n")
+const_segment_buffers <- create_buffers_in_batches(df.const.lines, buffer_dist = 1000, batch_size = 250)
+
+# Return to sequential processing
+future::plan(future::sequential)
+sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
+
+# Find accidents near construction segments
+accidents_near_construction <- df.acc.sf %>%
+  st_join(const_segment_buffers, join = st_intersects)
+
+# Analyze accident rate per construction segment length
+accidents_per_segment <- accidents_near_construction %>%
+  group_by(ID) %>%  # Assuming there's an ID column for construction segments
+  summarize(
+    accident_count = n(),
+    segment_length = as.numeric(st_length(geometry[1])),  # Length in meters
+    accidents_per_km = accident_count / (segment_length/1000)
+  )
+
+# Visualize segments by accident rate
+ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = accidents_per_segment, aes(color = accidents_per_km), size = 1.5) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Accident Rate per Construction Segment (2016-2021)",
+       color = "Accidents/km")
+```
+
+
+```{r Temporal Analysis and Severity Comparison with Buffers}
+# Temporal analysis - construction impact over time
+accidents_by_time <- accidents_near_construction %>%
+  mutate(month = floor_date(as.Date(Start_Time), "month")) %>%
+  group_by(month) %>%
+  summarize(accident_count = n())
+
+# Compare accident severity near vs. away from construction
+severity_comparison <- bind_rows(
+  accidents_near_construction %>% 
+    mutate(location = "Near construction") %>% 
+    select(Severity, location),
+  
+  anti_join(df.acc.sf, accidents_near_construction, by = "ID") %>% 
+    mutate(location = "Away from construction") %>% 
+    select(Severity, location)
+)
+
+# Visualize severity comparison
+ggplot(severity_comparison, aes(x = Severity, fill = location)) +
+  geom_bar(position = "dodge") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal() +
+  labs(title = "Accident Severity: Near vs. Away from Construction",
+       x = "Severity Level",
+       y = "Count",
+       fill = "Location")
+```
+
+
+
+
+

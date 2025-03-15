@@ -51,3 +51,6 @@ rsconnect/
 # Geospatial large data files
 *.nc
 
+# Data folder in final project
+final/data/
+
