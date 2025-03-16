@@ -1,9 +1,49 @@
 ---
-title: "R Notebook"
+title: "Geospatial Data Science - Final project"
+subtitle: "Analysis of US road accidents and construction sites"
+author: 
+- Moritz Peist
+- Noemi Lucchi
+- Simon Vellin
 output:
-  html_document:
+  html_notebook:
     df_print: paged
+    toc: true
 ---
+
+<hr>
+
+```{css, echo=FALSE}
+h1.title {
+  text-align: center;
+}
+
+h4.author, h4.date {
+  text-align: center;
+}
+
+.author {
+  text-align: center;
+}
+
+.date {
+  text-align: center;
+}
+
+/* Add styling for subtitle */
+h3.subtitle {
+  text-align: center;
+  font-style: italic;
+  margin-top: -10px;
+  color: #606060;
+}
+```
+
+<div style="text-align: center;">
+  <img src="../Barcelona_School_of_Economics_logo.svg" alt="BSE logo">
+</div>
+
+<hr>
 
 Load packages
 
@@ -564,6 +604,7 @@ accidents_per_zone <- accidents_per_zone %>% drop_na()
 # First, store our plot in a variable
 accident_zones_plot <- ggplot() +
   geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  # Arrange data in descending order so high frequency zones are plotted on top
   geom_sf(data = accidents_per_zone %>% arrange(accident_count), 
           aes(color = accident_count), size = 1.5) +
   scale_color_viridis_c() +
