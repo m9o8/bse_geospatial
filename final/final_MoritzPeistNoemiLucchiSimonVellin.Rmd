@@ -1,6 +1,8 @@
 ---
 title: "R Notebook"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 Load packages
@@ -16,6 +18,9 @@ library(tmap)         # For thematic maps
 library(tigris)       # For US road networks
 library(future)       # For parallel processing
 library(future.apply) # For parallel processing with apply functions
+library(sf)           # For spatial data handling
+library(RPostgres)    # For PostgreSQL connection
+library(DBI)          # For database interface
 
 # Create directories if they don't exist
 if (!dir.exists("./data/tigris")) {
@@ -127,17 +132,22 @@ df.const.sf <- df.const %>%
 
 ```{r Data Load Roads}
 # Get US roads (this can be slow for the entire US, so we might want to limit by state)
+# We also only get Primary and Secondary roads as they are the most important (i.e., where most constructions and accidents happen). Otherwise, the dataset would become to large (1.1GB)
+
+ca_roads <- primary_secondary_roads("CA", year = 2021)
+
+# Below code to get ALL roads for California (not recommended due to size)
 
 # First get all counties in California
-ca_counties <- counties("CA", year = 2021)
+#ca_counties <- counties("CA", year = 2021)
 
 # Then get roads for each county
-ca_roads_list <- lapply(ca_counties$COUNTYFP, function(county_code) {
-  roads("CA", county = county_code, year = 2021)
-})
+#ca_roads_list <- lapply(ca_counties$COUNTYFP, function(county_code) {
+#  roads("CA", county = county_code, year = 2021)
+#})
 
 # Optionally combine all county road data into one object
-ca_roads <- do.call(rbind, ca_roads_list)
+#ca_roads <- do.call(rbind, ca_roads_list)
 ```
 
 
@@ -154,11 +164,11 @@ ca_plot <- ggplot() +
   theme(legend.position = "bottom")
 print(ca_plot)
 # Then save it using ggsave
-#ggsave(filename = "imgs/california_accidents.png", 
-#       plot = ca_plot,
-#       width = 10, # width in inches
-#       height = 8, # height in inches
-#       dpi = 300)  # resolution
+ggsave(filename = "imgs/california_accidents.png", 
+       plot = ca_plot,
+       width = 10, # width in inches
+       height = 8, # height in inches
+       dpi = 300)  # resolution
 
 # Construction sites map with year coloring
 # First, store our plot in a variable
@@ -172,11 +182,91 @@ ca_const_plot <- ggplot() +
   theme(legend.position = "bottom")
 print(ca_const_plot)
 # Then save it using ggsave
-#ggsave(filename = "imgs/california_construction.png", 
-#       plot = ca_const_plot,
-#       width = 10, # width in inches
-#       height = 8, # height in inches
-#       dpi = 300)  # resolution
+ggsave(filename = "imgs/california_construction.png", 
+       plot = ca_const_plot,
+       width = 10, # width in inches
+       height = 8, # height in inches
+       dpi = 300)  # resolution
+```
+
+
+```{r Heatmap static}
+# Create heatmap of accidents using ggplot2
+accident_heatmap <- ggplot() +
+  # Add California roads as base layer
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  # Create density heatmap
+  stat_density_2d(
+    data = df.acc %>% filter(!is.na(Start_Lat) & !is.na(Start_Lng)),
+    aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density)),
+    geom = "tile", 
+    contour = FALSE,
+    alpha = 0.7,
+    h = 0.1,  # Bandwidth - adjust to match leaflet radius
+    n = 200   # Resolution - higher values create smoother heatmap
+  ) +
+  # Use color scheme similar to leaflet's default heatmap
+  scale_fill_gradientn(
+    colors = c("#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF0000"),
+    name = "Accident\nDensity"
+  ) +
+  # Set appropriate boundaries for California
+  coord_sf(
+    xlim = c(-124.5, -114.5),
+    ylim = c(32.5, 42.5)
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Accident Density Heatmap in California (2016-2021)",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  )
+# Display the plot
+print(accident_heatmap)
+```
+
+
+```{r Construction Heatmap static}
+# Create heatmap of construction sites using ggplot2
+construction_heatmap <- ggplot() +
+  # Add California roads as base layer
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  # Create density heatmap
+  stat_density_2d(
+    data = df.const %>% filter(!is.na(Start_Lat) & !is.na(Start_Lng)),
+    aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density)),
+    geom = "tile", 
+    contour = FALSE,
+    alpha = 0.7,
+    h = 0.1,  # Bandwidth
+    n = 200   # Resolution
+  ) +
+  # Use color scheme matching your leaflet construction map
+  scale_fill_gradientn(
+    colors = c("yellow", "orange", "red"),
+    name = "Construction\nDensity"
+  ) +
+  # Set appropriate boundaries for California
+  coord_sf(
+    xlim = c(-124.5, -114.5),
+    ylim = c(32.5, 42.5)
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Construction Density Heatmap in California (2016-2021)",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  )
+# Display the plot
+print(construction_heatmap)
 ```
 
 
@@ -201,7 +291,6 @@ accident_map
 ```
 
 
-
 ```{r Interactive Maps II}
 # Construction sites map with California focus and bounds constraints
 construction_map <- leaflet() %>%
@@ -219,62 +308,10 @@ construction_map <- leaflet() %>%
 construction_map
 ```
 
-## Buffer zone analysis
 
-```{r Buffer Zone Analysis}
-# Set up parallel processing
-future::plan(future::multisession, workers = parallel::detectCores() - 1)
+We construct construction sites now also as line objects since they have a start and end point
 
-# Set sf to use parallel processing
-sf_use_s2(FALSE)  # Disable S2 spherical geometry
-cores <- parallel::detectCores() - 1
-
-# Process each dataset with batching
-cat("Creating point buffers...\n")
-const_buffers <- create_buffers_in_batches(df.const.sf, buffer_dist = 1000, batch_size = 500)
-
-# Return to sequential processing
-future::plan(future::sequential)
-sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
-
-# Find accidents within construction zones
-# Use a spatial index and parallel processing
-plan(multisession, workers = parallel::detectCores() - 1)  # Use parallel processing
-
-accidents_in_construction <- df.acc.sf %>%
-  st_join(ca_const_buffers, join = st_within, prepared = TRUE)
-
-# Reset to sequential processing when done
-plan(sequential)
-
-# Count accidents per construction zone
-accidents_per_zone <- accidents_in_construction %>%
-  group_by(ID) %>%  # Grouping by the ID column
-  summarize(accident_count = n())
-
-# Visualize construction zones with accident counts
-# First, store our plot in a variable
-accident_zones_plot <- ggplot() +
-  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  geom_sf(data = accidents_per_zone, aes(fill = accident_count), alpha = 0.7) +
-  scale_fill_viridis_c() +
-  theme_minimal() +
-  labs(title = "Accident Counts within Construction Zones (2016-2021)")
-
-print(accident_zones_plot)
-
-# Then save it using ggsave
-#ggsave(filename = "imgs/accident_counts_construction_zones.png", 
-#       plot = accident_zones_plot,
-#       width = 10, # width in inches
-#       height = 8, # height in inches
-#       dpi = 300)  # resolution
-```
-
-
-Advanced construction sites: 
-
-```{r SF linestring}
+```{r Construction linestrings}
 # Convert construction data to linestring sf object
 df.const.lines <- df.const %>%
   filter(!is.na(Start_Lat) & !is.na(Start_Lng) & !is.na(End_Lat) & !is.na(End_Lng)) %>%
@@ -289,7 +326,263 @@ df.const.lines <- df.const %>%
 ```
 
 
-```{r Maps with Construction Lines}
+## Spatial operations in PostgreSQL
+
+Since file sizes are so large and Spatial operations in R incredibly slow, we retreat to a PostgreSQL database for the following operations (PostGIS also uses the SF framework, thus R are almost identical to the following SQL functions used).
+
+```{r DB ops}
+# Create a connection to your PostgreSQL database
+con <- dbConnect(
+  Postgres(),
+  dbname = "geospatial_final",
+  host = "localhost",
+  port = 5432,
+  # Uncomment and add your credentials if needed
+  user = "postgres",
+  password = Sys.getenv("POSTGRES_PWD")
+)
+
+# Set connection parameters for performance optimization
+dbExecute(con, "SET work_mem = '128MB'")           # Increase working memory
+dbExecute(con, "SET maintenance_work_mem = '256MB'") # For index creation
+dbExecute(con, "SET random_page_cost = 1.1")       # For SSD storage
+dbExecute(con, "SET effective_cache_size = '2GB'") # Estimate of memory available
+dbExecute(con, "SET max_parallel_workers_per_gather = 4") # Use multiple cores
+
+# Check if PostGIS extension is enabled
+postgis_check <- dbGetQuery(con, "SELECT PostGIS_version()")
+cat("PostGIS version:", postgis_check[[1]], "\n")
+
+# Check if SRID 3310 is available and add if not
+dbExecute(con, "
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM spatial_ref_sys WHERE srid = 3310) THEN
+      INSERT INTO spatial_ref_sys (srid, auth_name, auth_srid, proj4text, srtext)
+      VALUES (3310, 'EPSG', 3310, 
+      '+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +x_0=0 +y_0=-4000000 +datum=NAD83 +units=m +no_defs',
+      'PROJCS[\"NAD83 / California Albers\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.01745329251994328,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"standard_parallel_1\",34],PARAMETER[\"standard_parallel_2\",40.5],PARAMETER[\"latitude_of_center\",0],PARAMETER[\"longitude_of_center\",-120],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",-4000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AUTHORITY[\"EPSG\",\"3310\"]]');
+    END IF;
+  END
+  $$;
+")
+
+# Check if tables exist and only create them if they don't
+# Begin transaction for data processing
+dbExecute(con, "BEGIN")
+
+# Check if accidents table exists, if not create it
+has_accidents <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accidents')")$exists
+if (!has_accidents) {
+  # Write accidents data to database
+  sf::st_write(df.acc.sf, con, "accidents", 
+               layer_options = c("GEOM_TYPE=GEOMETRY", 
+                                 "GEOMETRY_NAME=geometry",
+                                 "SRID=4326"))
+  cat("Written accidents data to database\n")
+  
+  # Create spatial index for accidents
+  dbExecute(con, "CREATE INDEX idx_accidents_geometry ON accidents USING GIST(geometry)")
+  dbExecute(con, "ANALYZE accidents")
+  cat("Created spatial index for accidents table\n")
+}
+
+# Check if construction table exists, if not create it
+has_construction <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction')")$exists
+if (!has_construction) {
+  # Write construction data to database
+  sf::st_write(df.const.sf, con, "construction", 
+               layer_options = c("GEOM_TYPE=GEOMETRY", 
+                                 "GEOMETRY_NAME=geometry",
+                                 "SRID=4326"))
+  cat("Written construction data to database\n")
+  
+  # Create spatial index for construction
+  dbExecute(con, "CREATE INDEX idx_construction_geometry ON construction USING GIST(geometry)")
+  dbExecute(con, "ANALYZE construction")
+  cat("Created spatial index for construction table\n")
+}
+
+# Check if construction table with lines exists, if not create it
+has_construction_lines <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_lines')")$exists
+if (!has_construction_lines) {
+  # Write construction data to database
+  sf::st_write(df.const.lines, con, "construction_lines", 
+               layer_options = c("GEOM_TYPE=GEOMETRY", 
+                                 "GEOMETRY_NAME=geometry",
+                                 "SRID=4326"))
+  cat("Written construction_lines data to database\n")
+  
+  # Create spatial index for construction
+  dbExecute(con, "CREATE INDEX idx_construction_lines_geometry ON construction_lines USING GIST(geometry)")
+  dbExecute(con, "ANALYZE construction_lines")
+  cat("Created spatial index for construction_lines table\n")
+}
+
+# Commit transaction for base tables
+dbExecute(con, "COMMIT")
+
+# Begin transaction for buffer creation
+dbExecute(con, "BEGIN")
+
+# Check if construction_buffers table exists, if not create it
+has_construction_buffers <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_buffers')")$exists
+if (!has_construction_buffers) {
+  # Create construction buffers table
+  dbExecute(con, "
+    CREATE TABLE construction_buffers AS
+    SELECT 
+      \"ID\" as id,
+      ST_Transform(
+        ST_Buffer(
+          ST_Transform(geometry, 3310), 
+          300
+        ), 
+        4326
+      ) AS geometry
+    FROM construction
+  ")
+  
+  # Add primary key and spatial index
+  dbExecute(con, "ALTER TABLE construction_buffers ADD PRIMARY KEY (id)")
+  dbExecute(con, "CREATE INDEX idx_construction_buffers_geometry ON construction_buffers USING GIST(geometry)")
+  dbExecute(con, "SELECT UpdateGeometrySRID('construction_buffers', 'geometry', 4326)")
+  dbExecute(con, "ANALYZE construction_buffers")
+  cat("Created construction_buffers table with spatial index\n")
+}
+
+# Commit buffer transaction
+dbExecute(con, "COMMIT")
+
+# Begin transaction for join table
+dbExecute(con, "BEGIN")
+
+# Check if accidents_in_construction table exists, if not create it
+has_accidents_in_construction <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accidents_in_construction')")$exists
+# Check if accidents_in_construction table exists, if not create it
+has_accidents_in_construction <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accidents_in_construction')")$exists
+if (!has_accidents_in_construction) {
+  # Create join table with spatial and temporal constraints
+  dbExecute(con, "
+    CREATE TABLE accidents_in_construction AS
+    SELECT 
+      a.\"ID\" AS accident_id,
+      b.id AS construction_id
+    FROM 
+      accidents a
+    JOIN 
+      construction_buffers b ON ST_Within(a.geometry, b.geometry)
+    JOIN 
+      construction c ON b.id = c.\"ID\"
+    WHERE
+      -- Join only when accident date overlaps with construction date period
+      (a.\"Start_Time\" BETWEEN c.\"Start_Time\" AND c.\"End_Time\")
+      OR 
+      (a.\"End_Time\" BETWEEN c.\"Start_Time\" AND c.\"End_Time\")
+      OR 
+      (a.\"Start_Time\" <= c.\"Start_Time\" AND a.\"End_Time\" >= c.\"End_Time\")
+  ")
+  
+  # Add primary key and indices
+  dbExecute(con, "ALTER TABLE accidents_in_construction ADD PRIMARY KEY (accident_id, construction_id)")
+  dbExecute(con, "CREATE INDEX idx_aic_accident_id ON accidents_in_construction(accident_id)")
+  dbExecute(con, "CREATE INDEX idx_aic_construction_id ON accidents_in_construction(construction_id)")
+  dbExecute(con, "ANALYZE accidents_in_construction")
+  cat("Created accidents_in_construction table with indices\n")
+}
+
+# Commit join transaction
+dbExecute(con, "COMMIT")
+
+# Read the joined data back into R
+accidents_with_construction <- st_read(con, query = "
+  SELECT 
+    a.*, 
+    c.\"ID\" AS construction_id
+  FROM 
+    accidents a
+  LEFT JOIN 
+    accidents_in_construction b ON a.\"ID\" = b.accident_id
+  LEFT JOIN 
+    construction c ON b.construction_id = c.\"ID\"
+")
+
+accidents_per_zone <- st_read(con, query = "
+  SELECT 
+    c.\"ID\" AS construction_id,
+    COUNT (*) AS accident_count,
+    c.geometry
+  FROM 
+    accidents a
+  LEFT JOIN 
+    accidents_in_construction b ON a.\"ID\" = b.accident_id
+  LEFT JOIN 
+    construction c ON b.construction_id = c.\"ID\"
+  GROUP BY c.\"ID\", c.geometry
+")
+
+# Disconnect from database
+dbDisconnect(con)
+
+# Example of additional analysis with the joined data
+cat("Total accidents:", nrow(accidents_with_construction), "\n")
+cat("Accidents within construction areas:", sum(!is.na(accidents_with_construction$construction_id)), "\n")
+```
+
+## Buffer zone analysis
+
+In theory, the commented code below would achieve the same as our operation PostGIS but way slower. We will not run it here, but keep it to demonstrate that we could implement in R as well.
+
+```{r Buffer Zone Analysis}
+# Set up parallel processing
+#future::plan(future::multisession, workers = parallel::detectCores() - 1)
+
+# Set sf to use parallel processing
+#sf_use_s2(FALSE)  # Disable S2 spherical geometry
+#cores <- parallel::detectCores() - 1
+
+# Process each dataset with batching
+#cat("Creating point buffers...\n")
+#const_buffers <- create_buffers_in_batches(df.const.sf, buffer_dist = 1000, batch_size = 500)
+
+# Compute accidents within construction zones
+#accidents_in_construction <- df.acc.sf %>%
+#  st_join(const_buffers, join = st_within, prepared = TRUE)
+
+# Return to sequential processing
+#future::plan(future::sequential)
+#sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
+
+# Count accidents per construction zone
+#accidents_per_zone <- accidents_with_construction %>%
+#  group_by(ID) %>%  # Grouping by the ID column
+#  summarize(accident_count = n())
+
+accidents_per_zone <- accidents_per_zone %>% drop_na()
+
+# Visualize construction zones with accident counts
+# First, store our plot in a variable
+accident_zones_plot <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = accidents_per_zone %>% arrange(accident_count), 
+          aes(color = accident_count), size = 1.5) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Accident Counts within Construction Zones (2016-2021)")
+
+print(accident_zones_plot)
+
+# Then save it using ggsave
+ggsave(filename = "imgs/accident_counts_construction_zones.png", 
+       plot = accident_zones_plot,
+       width = 10, # width in inches
+       height = 8, # height in inches
+       dpi = 300)  # resolution
+```
+
+## Advanced construction sit analysis (line objects): 
+
+```{r Maps with Construction Lines - static}
 # Static map with construction line segments
 ggplot() +
   geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
@@ -297,7 +590,9 @@ ggplot() +
           color = "orange", size = 1) +
   theme_minimal() +
   labs(title = "US Construction Segments (2016-2021)")
+```
 
+```{r Maps with Construction Lines - dynamic}
 # Interactive map with construction segments focused on California
 construction_segment_map <- leaflet() %>%
   addTiles() %>%
@@ -305,7 +600,7 @@ construction_segment_map <- leaflet() %>%
                color = "orange",
                weight = 3,
                opacity = 0.7,
-               popup = ~paste("ID:", ID, "<br>Duration:", Duration)) %>%
+               popup = ~paste("ID:", ID, "<br>Duration:", duration)) %>%
   setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%  # Center on California
   setMaxBounds(lng1 = -124.6, lat1 = 42.0,    # Northwest corner of CA
                lng2 = -114.1, lat2 = 32.5)    # Southeast corner of CA
@@ -314,24 +609,26 @@ construction_segment_map <- leaflet() %>%
 construction_segment_map
 ```
 
+Again, we execute computationally heavy operations in PostGIS but have the commented R code below to showcase a theoretical, but slow implementatiojn in R.
+
 ```{r Construction Impact Analysis with Buffers}
 # Set up parallel processing
-future::plan(future::multisession, workers = parallel::detectCores() - 1)
+#future::plan(future::multisession, workers = parallel::detectCores() - 1)
 
 # Set sf to use parallel processing
-sf_use_s2(FALSE)  # Disable S2 spherical geometry
-cores <- parallel::detectCores() - 1
+#f_use_s2(FALSE)  # Disable S2 spherical geometry
+#cores <- parallel::detectCores() - 1
 
-cat("Creating line segment buffers...\n")
-const_segment_buffers <- create_buffers_in_batches(df.const.lines, buffer_dist = 1000, batch_size = 250)
-
-# Return to sequential processing
-future::plan(future::sequential)
-sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
+#cat("Creating line segment buffers...\n")
+#const_segment_buffers <- create_buffers_in_batches(df.const.lines, buffer_dist = 1000, batch_size = 250)
 
 # Find accidents near construction segments
-accidents_near_construction <- df.acc.sf %>%
-  st_join(const_segment_buffers, join = st_intersects)
+#accidents_near_construction <- df.acc.sf %>%
+#  st_join(const_segment_buffers, join = st_intersects, prepared = TRUE)
+
+# Return to sequential processing
+#future::plan(future::sequential)
+#sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
 
 # Analyze accident rate per construction segment length
 accidents_per_segment <- accidents_near_construction %>%
@@ -381,8 +678,6 @@ ggplot(severity_comparison, aes(x = Severity, fill = location)) +
        y = "Count",
        fill = "Location")
 ```
-
-
 
 
 
