@@ -1,11 +1,14 @@
 ---
 title: "Geospatial Data Science - Final project"
-subtitle: "Analysis of US road accidents and construction sites"
-author: 
+author:
 - Moritz Peist
 - Noemi Lucchi
 - Simon Vellin
+subtitle: Analysis of US road accidents and construction sites
 output:
+  html_document:
+    toc: true
+    df_print: paged
   html_notebook:
     df_print: paged
     toc: true
@@ -121,9 +124,8 @@ Load data (filter for California for now to limit data set size)
 ```{r Data Load Accidents}
 # Efficient approach
 df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
-  # Filter date range to 2016-2021
-  as.Date(Start_Time) >= as.Date("2016-01-01") & 
-  as.Date(Start_Time) <= as.Date("2021-12-31") & 
+  # Filter date range of 2021
+  lubridate::year(as.Date(Start_Time)) == 2021 & 
   # And California
   State == "CA"
 ][, `:=`(
@@ -139,10 +141,9 @@ df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
 
 ```{r Data Load Constructions}
 df.const <- fread("data/us_constructions/US_constructions_Dec21.csv")[
-  # Filter date range to 2016-2021
-  as.Date(Start_Time) >= as.Date("2016-01-01") & 
-  as.Date(Start_Time) <= as.Date("2021-12-31") & 
-    # And California
+  # Filter date range of 2021
+  lubridate::year(as.Date(Start_Time)) == 2021 & 
+  # And California
   State == "CA"
 ][, `:=`(
   # Add year, quarter, month columns
@@ -232,25 +233,26 @@ ggsave(filename = "imgs/california_construction.png",
 
 ```{r Heatmap static}
 # Create heatmap of accidents using ggplot2
+# Modified accident heatmap with transparency for low density areas
 accident_heatmap <- ggplot() +
   # Add California roads as base layer
   geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  # Create density heatmap
+  # Create density heatmap with transparency threshold
   stat_density_2d(
     data = df.acc %>% filter(!is.na(Start_Lat) & !is.na(Start_Lng)),
-    aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density)),
+    aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density), alpha = after_stat(density)),
     geom = "tile", 
     contour = FALSE,
-    alpha = 0.7,
-    h = 0.1,  # Bandwidth - adjust to match leaflet radius
-    n = 200   # Resolution - higher values create smoother heatmap
+    h = 0.1,
+    n = 200
   ) +
+  # Set alpha scaling with a minimum threshold
+  scale_alpha_continuous(range = c(0, 0.9), guide = "none") +
   # Use color scheme similar to leaflet's default heatmap
   scale_fill_gradientn(
     colors = c("#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF0000"),
     name = "Accident\nDensity"
   ) +
-  # Set appropriate boundaries for California
   coord_sf(
     xlim = c(-124.5, -114.5),
     ylim = c(32.5, 42.5)
@@ -267,6 +269,13 @@ accident_heatmap <- ggplot() +
   )
 # Display the plot
 print(accident_heatmap)
+
+ggsave(filename = "imgs/accident_heatmap.png", 
+       plot = accident_heatmap,
+       width = 10, # width in inches
+       height = 8, # height in inches
+       dpi = 300)  # resolution
+
 ```
 
 
@@ -285,6 +294,8 @@ construction_heatmap <- ggplot() +
     h = 0.1,  # Bandwidth
     n = 200   # Resolution
   ) +
+  # Set alpha scaling with a minimum threshold
+  scale_alpha_continuous(range = c(0, 0.9), guide = "none") +
   # Use color scheme matching your leaflet construction map
   scale_fill_gradientn(
     colors = c("yellow", "orange", "red"),
@@ -423,12 +434,14 @@ if (!has_accidents) {
   
   # Create spatial index for accidents
   dbExecute(con, "CREATE INDEX idx_accidents_geometry ON accidents USING GIST(geometry)")
+  dbExecute(con, 'CREATE INDEX idx_accidents_start_time ON accidents("Start_Time");')
   dbExecute(con, "ANALYZE accidents")
   cat("Created spatial index for accidents table\n")
 }
 
 # Check if construction table exists, if not create it
 has_construction <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction')")$exists
+
 if (!has_construction) {
   # Write construction data to database
   sf::st_write(df.const.sf, con, "construction", 
@@ -439,12 +452,15 @@ if (!has_construction) {
   
   # Create spatial index for construction
   dbExecute(con, "CREATE INDEX idx_construction_geometry ON construction USING GIST(geometry)")
+  dbExecute(con, 'CREATE INDEX idx_construction_start_time ON construction("Start_Time");')
+  dbExecute(con, 'CREATE INDEX idx_construction_end_time ON construction("End_Time");')
   dbExecute(con, "ANALYZE construction")
   cat("Created spatial index for construction table\n")
 }
 
 # Check if construction table with lines exists, if not create it
 has_construction_lines <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_lines')")$exists
+
 if (!has_construction_lines) {
   # Write construction data to database
   sf::st_write(df.const.lines, con, "construction_lines", 
@@ -455,6 +471,8 @@ if (!has_construction_lines) {
   
   # Create spatial index for construction
   dbExecute(con, "CREATE INDEX idx_construction_lines_geometry ON construction_lines USING GIST(geometry)")
+  dbExecute(con, 'CREATE INDEX idx_construction_lines_start_time ON construction_lines("Start_Time");')
+  dbExecute(con, 'CREATE INDEX idx_construction_lines_end_time ON construction_lines("End_Time");')
   dbExecute(con, "ANALYZE construction_lines")
   cat("Created spatial index for construction_lines table\n")
 }
@@ -462,111 +480,524 @@ if (!has_construction_lines) {
 # Commit transaction for base tables
 dbExecute(con, "COMMIT")
 
-# Begin transaction for buffer creation
-dbExecute(con, "BEGIN")
-
-# Check if construction_buffers table exists, if not create it
+#---------------------------------------------------------------------------
+# STEP 1A: Create enhanced construction buffers table with time ranges
+#---------------------------------------------------------------------------
 has_construction_buffers <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_buffers')")$exists
 if (!has_construction_buffers) {
-  # Create construction buffers table
+  cat("Step 1A: Creating enhanced construction_buffers table with time ranges...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  # Create construction buffers table with appropriate projection and time ranges
   dbExecute(con, "
     CREATE TABLE construction_buffers AS
     SELECT 
-      \"ID\" as id,
+      \"ID\" as construction_id,
+      \"Start_Time\" as start_time,
+      \"End_Time\" as end_time,
       ST_Transform(
         ST_Buffer(
-          ST_Transform(geometry, 3310), 
-          300
+          ST_Transform(geometry, 3310), -- Transform to California Albers for accurate distance
+          300                           -- 300 meters buffer
         ), 
-        4326
+        4326                            -- Transform back to WGS 84 for joining
       ) AS geometry
     FROM construction
   ")
   
   # Add primary key and spatial index
-  dbExecute(con, "ALTER TABLE construction_buffers ADD PRIMARY KEY (id)")
+  dbExecute(con, "ALTER TABLE construction_buffers ADD PRIMARY KEY (construction_id)")
   dbExecute(con, "CREATE INDEX idx_construction_buffers_geometry ON construction_buffers USING GIST(geometry)")
-  dbExecute(con, "SELECT UpdateGeometrySRID('construction_buffers', 'geometry', 4326)")
+  dbExecute(con, "CREATE INDEX idx_construction_buffers_times ON construction_buffers(start_time, end_time)")
   dbExecute(con, "ANALYZE construction_buffers")
-  cat("Created construction_buffers table with spatial index\n")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created enhanced construction_buffers table with spatial index and time ranges\n")
+} else {
+  cat("Construction buffers table already exists, skipping creation\n")
 }
 
-# Commit buffer transaction
-dbExecute(con, "COMMIT")
-
-# Begin transaction for join table
-dbExecute(con, "BEGIN")
-
-# Check if accidents_in_construction table exists, if not create it
-has_accidents_in_construction <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accidents_in_construction')")$exists
-# Check if accidents_in_construction table exists, if not create it
-has_accidents_in_construction <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accidents_in_construction')")$exists
-if (!has_accidents_in_construction) {
-  # Create join table with spatial and temporal constraints
+#---------------------------------------------------------------------------
+# STEP 1B: Create spatial matches table (using enhanced pre-computed buffers)
+#---------------------------------------------------------------------------
+has_spatial_matches <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'spatial_matches')")$exists
+if (!has_spatial_matches) {
+  cat("Step 1B: Creating spatial_matches table using enhanced pre-computed buffers...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  # Simplified join using pre-computed buffers with time information
   dbExecute(con, "
-    CREATE TABLE accidents_in_construction AS
-    SELECT 
+    CREATE TABLE spatial_matches AS
+    SELECT
       a.\"ID\" AS accident_id,
-      b.id AS construction_id
+      a.\"Severity\" AS accident_severity,
+      a.\"Start_Time\" AS accident_time,
+      b.construction_id
     FROM 
       accidents a
     JOIN 
-      construction_buffers b ON ST_Within(a.geometry, b.geometry)
-    JOIN 
-      construction c ON b.id = c.\"ID\"
-    WHERE
-      -- Join only when accident date overlaps with construction date period
-      (a.\"Start_Time\" BETWEEN c.\"Start_Time\" AND c.\"End_Time\")
-      OR 
-      (a.\"End_Time\" BETWEEN c.\"Start_Time\" AND c.\"End_Time\")
-      OR 
-      (a.\"Start_Time\" <= c.\"Start_Time\" AND a.\"End_Time\" >= c.\"End_Time\")
+      construction_buffers b ON 
+        ST_Within(a.geometry, b.geometry) AND
+        a.\"Start_Time\" BETWEEN b.start_time AND b.end_time
   ")
   
-  # Add primary key and indices
-  dbExecute(con, "ALTER TABLE accidents_in_construction ADD PRIMARY KEY (accident_id, construction_id)")
-  dbExecute(con, "CREATE INDEX idx_aic_accident_id ON accidents_in_construction(accident_id)")
-  dbExecute(con, "CREATE INDEX idx_aic_construction_id ON accidents_in_construction(construction_id)")
-  dbExecute(con, "ANALYZE accidents_in_construction")
-  cat("Created accidents_in_construction table with indices\n")
+  # Create indices for efficient join operations in later steps
+  dbExecute(con, "CREATE INDEX idx_spatial_accident ON spatial_matches(accident_id)")
+  dbExecute(con, "CREATE INDEX idx_spatial_construction ON spatial_matches(construction_id)")
+  dbExecute(con, "ANALYZE spatial_matches")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created spatial_matches table with combined temporal and spatial filtering\n")
+} else {
+  cat("Spatial matches table already exists, skipping creation\n")
 }
 
-# Commit join transaction
-dbExecute(con, "COMMIT")
+#---------------------------------------------------------------------------
+# STEP 2: Count construction sites per accident (unchanged)
+#---------------------------------------------------------------------------
+has_construction_counts <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_counts')")$exists
+if (!has_construction_counts) {
+  cat("Step 2: Creating construction_counts table...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  dbExecute(con, "
+    CREATE TABLE construction_counts AS
+    SELECT
+      accident_id,
+      COUNT(*) AS nearby_construction_count
+    FROM 
+      spatial_matches
+    GROUP BY
+      accident_id
+  ")
+  
+  # Create index for efficient joins in the final step
+  dbExecute(con, "CREATE INDEX idx_construction_counts_accident ON construction_counts(accident_id)")
+  dbExecute(con, "ANALYZE construction_counts")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created construction_counts table\n")
+} else {
+  cat("Construction counts table already exists, skipping creation\n")
+}
 
-# Read the joined data back into R
-accidents_with_construction <- st_read(con, query = "
+#---------------------------------------------------------------------------
+# STEP 3: Create final analysis table (unchanged)
+#---------------------------------------------------------------------------
+has_accident_construction_analysis <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accident_construction_analysis')")$exists
+if (!has_accident_construction_analysis) {
+  cat("Step 3: Creating final accident_construction_analysis table...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  dbExecute(con, "
+    CREATE TABLE accident_construction_analysis AS
+    WITH ranked_matches AS (
+      SELECT
+        sm.accident_id,
+        sm.construction_id,
+        sm.accident_severity,
+        sm.accident_time,
+        cc.nearby_construction_count,
+        -- Rank construction sites for each accident (random selection if multiple)
+        ROW_NUMBER() OVER (
+          PARTITION BY sm.accident_id
+          ORDER BY RANDOM()  -- Random selection ensures unbiased assignment
+        ) AS rank
+      FROM 
+        spatial_matches sm
+      JOIN
+        construction_counts cc ON sm.accident_id = cc.accident_id
+    )
+    SELECT 
+      accident_id,
+      construction_id,
+      'LINE' AS construction_type,  -- Indicates we're working with line geometries only
+      accident_severity,            -- For severity analysis
+      accident_time,                -- For temporal analysis
+      1 AS temporal_overlap,        -- Always 1 due to our temporal filter in Step 1
+      nearby_construction_count,    -- Number of construction sites affecting this accident
+      1 AS is_near_active_construction  -- Always 1 due to our filtering steps
+    FROM 
+      ranked_matches
+    WHERE 
+      rank = 1  -- Select only one construction site per accident
+  ")
+  
+  # Create indices for query optimization
+  dbExecute(con, "CREATE INDEX idx_aca_accident_id ON accident_construction_analysis(accident_id)")
+  dbExecute(con, "CREATE INDEX idx_aca_construction_id ON accident_construction_analysis(construction_id)")
+  dbExecute(con, "CREATE INDEX idx_aca_count ON accident_construction_analysis(nearby_construction_count)")
+  dbExecute(con, "ANALYZE accident_construction_analysis")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created accident_construction_analysis table\n")
+} else {
+  cat("Accident construction analysis table already exists, skipping creation\n")
+}
+
+
+# Read the data for construction zones with accident counts (for visualization)
+accidents_per_zone <- st_read(con, query = "
+  WITH construction_accident_counts AS (
+    SELECT 
+      aca.construction_id,
+      COUNT(aca.accident_id) AS accident_count
+    FROM 
+      accident_construction_analysis aca
+    GROUP BY 
+      aca.construction_id
+  )
   SELECT 
-    a.*, 
-    c.\"ID\" AS construction_id
+    cl.\"ID\" AS construction_id,
+    cac.accident_count,
+    cl.geometry
   FROM 
-    accidents a
-  LEFT JOIN 
-    accidents_in_construction b ON a.\"ID\" = b.accident_id
-  LEFT JOIN 
-    construction c ON b.construction_id = c.\"ID\"
+    construction_lines cl
+  JOIN 
+    construction_accident_counts cac ON cl.\"ID\" = cac.construction_id
+  ORDER BY 
+    cac.accident_count DESC
 ")
 
-accidents_per_zone <- st_read(con, query = "
+# Get statistics on construction zones
+cat("Construction zones with accidents:", nrow(accidents_per_zone), "\n")
+cat("Maximum accidents in a single construction zone:", max(accidents_per_zone$accident_count), "\n")
+cat("Average accidents per construction zone:", round(mean(accidents_per_zone$accident_count), 2), "\n")
+
+# Read accidents with their associated construction data
+accidents_with_construction <- st_read(con, query = "
   SELECT 
-    c.\"ID\" AS construction_id,
-    COUNT (*) AS accident_count,
-    c.geometry
+    a.*,
+    CASE WHEN aca.accident_id IS NOT NULL THEN 1 ELSE 0 END AS near_construction,
+    aca.construction_id,
+    aca.nearby_construction_count,
+    aca.construction_type
   FROM 
     accidents a
   LEFT JOIN 
-    accidents_in_construction b ON a.\"ID\" = b.accident_id
-  LEFT JOIN 
-    construction c ON b.construction_id = c.\"ID\"
-  GROUP BY c.\"ID\", c.geometry
+    accident_construction_analysis aca ON a.\"ID\" = aca.accident_id
+")
+
+# Get distribution of accident counts by construction density
+construction_density_stats <- dbGetQuery(con, "
+  SELECT 
+    nearby_construction_count,
+    COUNT(*) AS accident_count
+  FROM 
+    accident_construction_analysis
+  GROUP BY 
+    nearby_construction_count
+  ORDER BY 
+    nearby_construction_count
+")
+
+#---------------------------------------------------------------------------
+# Report completion and verify table sizes
+#---------------------------------------------------------------------------
+cat("All tables are ready for analysis\n")
+
+print(construction_density_stats)
+
+# Total accidents summary - for comparison
+total_accidents <- dbGetQuery(con, "SELECT COUNT(*) as count FROM accidents")$count
+accidents_near_construction <- dbGetQuery(con, "SELECT COUNT(*) as count FROM accident_construction_analysis")$count
+
+cat("Total accidents in dataset:", total_accidents, "\n")
+cat("Accidents near active construction:", accidents_near_construction, "\n")
+cat("Percentage of accidents near active construction: ", 
+    round(accidents_near_construction/total_accidents*100, 2), "%\n")
+
+
+#---------------------------------------------------------------------------
+# STEP 1A-L: Create construction line buffers table with time ranges
+#---------------------------------------------------------------------------
+has_construction_line_buffers <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_line_buffers')")$exists
+if (!has_construction_line_buffers) {
+  cat("Step 1A-L: Creating construction_line_buffers table with time ranges...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  # Create line-based construction buffers with time information
+  dbExecute(con, "
+    CREATE TABLE construction_line_buffers AS
+    SELECT 
+      \"ID\" as construction_id,
+      \"Start_Time\" as start_time,
+      \"End_Time\" as end_time,
+      ST_Transform(
+        ST_Buffer(
+          ST_Transform(geometry, 3310), -- Transform to California Albers for accurate distance
+          300                           -- 300 meters buffer
+        ), 
+        4326                            -- Transform back to WGS 84 for joining
+      ) AS geometry,
+      ST_Length(ST_Transform(geometry, 3310)) AS segment_length_m -- Length in meters
+    FROM construction_lines
+  ")
+  
+  # Add primary key and spatial index
+  dbExecute(con, "ALTER TABLE construction_line_buffers ADD PRIMARY KEY (construction_id)")
+  dbExecute(con, "CREATE INDEX idx_construction_line_buffers_geometry ON construction_line_buffers USING GIST(geometry)")
+  dbExecute(con, "CREATE INDEX idx_construction_line_buffers_times ON construction_line_buffers(start_time, end_time)")
+  dbExecute(con, "ANALYZE construction_line_buffers")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created construction_line_buffers table with spatial index and time ranges\n")
+} else {
+  cat("Construction line buffers table already exists, skipping creation\n")
+}
+
+#---------------------------------------------------------------------------
+# STEP 1B-L: Create spatial matches table for line objects
+#---------------------------------------------------------------------------
+has_line_spatial_matches <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'line_spatial_matches')")$exists
+if (!has_line_spatial_matches) {
+  cat("Step 1B-L: Creating line_spatial_matches table using pre-computed line buffers...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  # Simplified join using pre-computed line buffers with time information
+  dbExecute(con, "
+    CREATE TABLE line_spatial_matches AS
+    SELECT
+      a.\"ID\" AS accident_id,
+      a.\"Severity\" AS accident_severity,
+      a.\"Start_Time\" AS accident_time,
+      b.construction_id,
+      b.segment_length_m
+    FROM 
+      accidents a
+    JOIN 
+      construction_line_buffers b ON 
+        ST_Within(a.geometry, b.geometry) AND
+        a.\"Start_Time\" BETWEEN b.start_time AND b.end_time
+  ")
+  
+  # Create indices for efficient join operations
+  dbExecute(con, "CREATE INDEX idx_line_spatial_accident ON line_spatial_matches(accident_id)")
+  dbExecute(con, "CREATE INDEX idx_line_spatial_construction ON line_spatial_matches(construction_id)")
+  dbExecute(con, "ANALYZE line_spatial_matches")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created line_spatial_matches table with combined temporal and spatial filtering\n")
+} else {
+  cat("Line spatial matches table already exists, skipping creation\n")
+}
+
+#---------------------------------------------------------------------------
+# STEP 2-L: Count construction line sites per accident
+#---------------------------------------------------------------------------
+has_line_construction_counts <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'line_construction_counts')")$exists
+if (!has_line_construction_counts) {
+  cat("Step 2-L: Creating line_construction_counts table...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  dbExecute(con, "
+    CREATE TABLE line_construction_counts AS
+    SELECT
+      accident_id,
+      COUNT(*) AS nearby_line_construction_count
+    FROM 
+      line_spatial_matches
+    GROUP BY
+      accident_id
+  ")
+  
+  # Create index for efficient joins in the final step
+  dbExecute(con, "CREATE INDEX idx_line_construction_counts_accident ON line_construction_counts(accident_id)")
+  dbExecute(con, "ANALYZE line_construction_counts")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created line_construction_counts table\n")
+} else {
+  cat("Line construction counts table already exists, skipping creation\n")
+}
+
+#---------------------------------------------------------------------------
+# STEP 3-L: Create final line-based analysis table
+#---------------------------------------------------------------------------
+has_line_accident_construction_analysis <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'line_accident_construction_analysis')")$exists
+if (!has_line_accident_construction_analysis) {
+  cat("Step 3-L: Creating final line_accident_construction_analysis table...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  dbExecute(con, "
+    CREATE TABLE line_accident_construction_analysis AS
+    WITH ranked_matches AS (
+      SELECT
+        sm.accident_id,
+        sm.construction_id,
+        sm.accident_severity,
+        sm.accident_time,
+        sm.segment_length_m,
+        cc.nearby_line_construction_count,
+        -- Rank construction sites for each accident (random selection if multiple)
+        ROW_NUMBER() OVER (
+          PARTITION BY sm.accident_id
+          ORDER BY RANDOM()  -- Random selection ensures unbiased assignment
+        ) AS rank
+      FROM 
+        line_spatial_matches sm
+      JOIN
+        line_construction_counts cc ON sm.accident_id = cc.accident_id
+    )
+    SELECT 
+      accident_id,
+      construction_id,
+      accident_severity,
+      accident_time,
+      segment_length_m,
+      nearby_line_construction_count,
+      1 AS temporal_overlap,           -- Always 1 due to our temporal filter in Step 1
+      1 AS is_near_active_construction -- Always 1 due to our filtering steps
+    FROM 
+      ranked_matches
+    WHERE 
+      rank = 1  -- Select only one construction site per accident
+  ")
+  
+  # Create indices for query optimization
+  dbExecute(con, "CREATE INDEX idx_laca_accident_id ON line_accident_construction_analysis(accident_id)")
+  dbExecute(con, "CREATE INDEX idx_laca_construction_id ON line_accident_construction_analysis(construction_id)")
+  dbExecute(con, "CREATE INDEX idx_laca_count ON line_accident_construction_analysis(nearby_line_construction_count)")
+  dbExecute(con, "ANALYZE line_accident_construction_analysis")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created line_accident_construction_analysis table\n")
+} else {
+  cat("Line accident construction analysis table already exists, skipping creation\n")
+}
+
+#---------------------------------------------------------------------------
+# STEP 4-L: Calculate accident rates by segment length
+#---------------------------------------------------------------------------
+has_accident_rates <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_segment_accident_rates')")$exists
+if (!has_accident_rates) {
+  cat("Step 4-L: Creating construction_segment_accident_rates table...\n")
+  
+  dbExecute(con, "BEGIN")
+  
+  dbExecute(con, "
+    CREATE TABLE construction_segment_accident_rates AS
+    SELECT 
+      cl.\"ID\" AS construction_id,
+      cl.geometry,
+      COUNT(laca.accident_id) AS accident_count,
+      MAX(laca.segment_length_m) AS segment_length_m,
+      COUNT(laca.accident_id) / (MAX(laca.segment_length_m) / 1000.0) AS accidents_per_km
+    FROM 
+      construction_lines cl
+    LEFT JOIN 
+      line_accident_construction_analysis laca ON cl.\"ID\" = laca.construction_id
+    GROUP BY 
+      cl.\"ID\", cl.geometry
+  ")
+  
+  # Create spatial index
+  dbExecute(con, "CREATE INDEX idx_accident_rates_geometry ON construction_segment_accident_rates USING GIST(geometry)")
+  dbExecute(con, "ANALYZE construction_segment_accident_rates")
+  
+  dbExecute(con, "COMMIT")
+  cat("Created construction_segment_accident_rates table\n")
+} else {
+  cat("Construction segment accident rates table already exists, skipping creation\n")
+}
+
+# Read accident rates by construction segment
+accident_rates_by_segment <- st_read(con, query = "
+  SELECT 
+    construction_id,
+    accident_count,
+    segment_length_m,
+    accidents_per_km,
+    geometry
+  FROM 
+    construction_segment_accident_rates
+  WHERE 
+    segment_length_m > 0  -- Avoid division by zero
+  ORDER BY 
+    accidents_per_km DESC
+")
+
+# Display summary statistics
+cat("Construction segments analyzed:", nrow(accident_rates_by_segment), "\n")
+cat("Maximum accidents per km:", max(accident_rates_by_segment$accidents_per_km, na.rm = TRUE), "\n")
+cat("Average accidents per km:", mean(accident_rates_by_segment$accidents_per_km, na.rm = TRUE), "\n")
+cat("Median segment length (m):", median(accident_rates_by_segment$segment_length_m, na.rm = TRUE), "\n")
+
+# Severity analysis near line construction
+severity_by_construction <- dbGetQuery(con, "
+  SELECT 
+    laca.accident_severity, 
+    COUNT(*) AS count
+  FROM 
+    line_accident_construction_analysis laca
+  GROUP BY 
+    laca.accident_severity
+  ORDER BY 
+    laca.accident_severity
+")
+
+# Comparison of accident severity near vs. away from construction
+severity_comparison <- dbGetQuery(con, "
+  WITH construction_accidents AS (
+    SELECT 
+      a.\"ID\", 
+      a.\"Severity\", 
+      'Near construction' AS location
+    FROM 
+      accidents a
+    JOIN 
+      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
+  ),
+  non_construction_accidents AS (
+    SELECT 
+      a.\"ID\", 
+      a.\"Severity\", 
+      'Away from construction' AS location
+    FROM 
+      accidents a
+    LEFT JOIN 
+      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
+    WHERE 
+      laca.accident_id IS NULL
+  )
+  SELECT 
+    \"Severity\", 
+    location, 
+    COUNT(*) AS count
+  FROM (
+    SELECT * FROM construction_accidents
+    UNION ALL
+    SELECT * FROM non_construction_accidents
+  ) combined
+  GROUP BY 
+    \"Severity\", location
+  ORDER BY 
+    \"Severity\", location
+")
+
+# Time-based analysis
+temporal_analysis <- dbGetQuery(con, "
+  SELECT 
+    DATE_TRUNC('month', laca.accident_time) AS month,
+    COUNT(*) AS accident_count
+  FROM 
+    line_accident_construction_analysis laca
+  GROUP BY 
+    DATE_TRUNC('month', laca.accident_time)
+  ORDER BY 
+    month
 ")
 
 # Disconnect from database
 dbDisconnect(con)
-
-# Example of additional analysis with the joined data
-cat("Total accidents:", nrow(accidents_with_construction), "\n")
-cat("Accidents within construction areas:", sum(!is.na(accidents_with_construction$construction_id)), "\n")
 ```
 
 ## Buffer zone analysis
@@ -609,7 +1040,7 @@ accident_zones_plot <- ggplot() +
           aes(color = accident_count), size = 1.5) +
   scale_color_viridis_c() +
   theme_minimal() +
-  labs(title = "Accident Counts within Construction Zones (2016-2021)")
+  labs(title = "Accident Counts within Construction Zones (2021)")
 
 print(accident_zones_plot)
 
@@ -630,7 +1061,7 @@ ggplot() +
   geom_sf(data = df.const.lines %>% filter(State == "CA"), 
           color = "orange", size = 1) +
   theme_minimal() +
-  labs(title = "US Construction Segments (2016-2021)")
+  labs(title = "US Construction Segments (2021)")
 ```
 
 ```{r Maps with Construction Lines - dynamic}
@@ -672,18 +1103,18 @@ Again, we execute computationally heavy operations in PostGIS but have the comme
 #sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
 
 # Analyze accident rate per construction segment length
-accidents_per_segment <- accidents_near_construction %>%
-  group_by(ID) %>%  # Assuming there's an ID column for construction segments
-  summarize(
-    accident_count = n(),
-    segment_length = as.numeric(st_length(geometry[1])),  # Length in meters
-    accidents_per_km = accident_count / (segment_length/1000)
-  )
+#accidents_per_segment <- accidents_near_construction %>%
+#  group_by(ID) %>%  # Assuming there's an ID column for construction segments
+#  summarize(
+#    accident_count = n(),
+#    segment_length = as.numeric(st_length(geometry[1])),  # Length in meters
+#    accidents_per_km = accident_count / (segment_length/1000)
+#  )
 
 # Visualize segments by accident rate
 ggplot() +
   geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  geom_sf(data = accidents_per_segment, aes(color = accidents_per_km), size = 1.5) +
+  geom_sf(data = accident_rates_by_segment, aes(color = accidents_per_km), size = 1.5) +
   scale_color_viridis_c() +
   theme_minimal() +
   labs(title = "Accident Rate per Construction Segment (2016-2021)",
@@ -691,27 +1122,88 @@ ggplot() +
 ```
 
 
-```{r Temporal Analysis and Severity Comparison with Buffers}
-# Temporal analysis - construction impact over time
-accidents_by_time <- accidents_near_construction %>%
-  mutate(month = floor_date(as.Date(Start_Time), "month")) %>%
-  group_by(month) %>%
-  summarize(accident_count = n())
-
-# Compare accident severity near vs. away from construction
-severity_comparison <- bind_rows(
-  accidents_near_construction %>% 
-    mutate(location = "Near construction") %>% 
-    select(Severity, location),
-  
-  anti_join(df.acc.sf, accidents_near_construction, by = "ID") %>% 
-    mutate(location = "Away from construction") %>% 
-    select(Severity, location)
+```{r}
+# Reestablish connection to PostgreSQL database
+con <- dbConnect(
+  Postgres(),
+  dbname = "geospatial_final",
+  host = "localhost",
+  port = 5432,
+  user = "postgres",
+  password = Sys.getenv("POSTGRES_PWD")
 )
 
+# Temporal analysis - construction impact over time
+accidents_by_time <- dbGetQuery(con, "
+  SELECT 
+    DATE_TRUNC('month', accident_time) AS month,
+    COUNT(*) AS accident_count
+  FROM 
+    line_accident_construction_analysis
+  GROUP BY 
+    DATE_TRUNC('month', accident_time)
+  ORDER BY 
+    month
+") %>%
+  mutate(month = as.Date(month))  # Convert PostgreSQL timestamp to R Date
+
+# Get severity comparison data
+severity_comparison <- dbGetQuery(con, "
+  WITH construction_accidents AS (
+    SELECT 
+      a.\"Severity\", 
+      'Near construction' AS location
+    FROM 
+      accidents a
+    JOIN 
+      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
+  ),
+  non_construction_accidents AS (
+    SELECT 
+      a.\"Severity\", 
+      'Away from construction' AS location
+    FROM 
+      accidents a
+    LEFT JOIN 
+      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
+    WHERE 
+      laca.accident_id IS NULL
+  )
+  SELECT 
+    \"Severity\", 
+    location, 
+    COUNT(*) AS count
+  FROM (
+    SELECT * FROM construction_accidents
+    UNION ALL
+    SELECT * FROM non_construction_accidents
+  ) combined
+  GROUP BY 
+    \"Severity\", location
+  ORDER BY 
+    \"Severity\", location
+")
+
+# Disconnect from database
+dbDisconnect(con)
+```
+
+
+```{r Temporal Analysis and Severity Comparison with Buffers}
+# Visualize temporal analysis
+ggplot(accidents_by_time, aes(x = month, y = accident_count)) +
+  geom_line() +
+  geom_point() +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Accidents Near Construction Over Time",
+       x = "Month",
+       y = "Accident Count")
+
 # Visualize severity comparison
-ggplot(severity_comparison, aes(x = Severity, fill = location)) +
-  geom_bar(position = "dodge") +
+ggplot(severity_comparison, aes(x = Severity, y = count, fill = location)) +
+  geom_bar(stat = "identity", position = "dodge") +
   scale_fill_brewer(palette = "Set1") +
   theme_minimal() +
   labs(title = "Accident Severity: Near vs. Away from Construction",
