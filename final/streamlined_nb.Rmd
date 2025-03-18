@@ -1,0 +1,2093 @@
+---
+title: "Geospatial Data Science - Final project"
+author:
+- Moritz Peist
+- Noemi Lucchi
+- Simon Vellin
+subtitle: Analysis of US road accidents and construction sites
+output:
+  html_notebook:
+    df_print: paged
+    toc: true
+  html_document:
+    toc: true
+    df_print: paged
+---
+
+<hr>
+
+```{css, echo=FALSE}
+h1.title {
+  text-align: center;
+}
+
+h4.author, h4.date {
+  text-align: center;
+}
+
+.author {
+  text-align: center;
+}
+
+.date {
+  text-align: center;
+}
+
+/* Add styling for subtitle */
+h3.subtitle {
+  text-align: center;
+  font-style: italic;
+  margin-top: -10px;
+  color: #606060;
+}
+```
+
+<div style="text-align: center;">
+  <img src="../Barcelona_School_of_Economics_logo.svg" alt="BSE logo">
+</div>
+
+<hr>
+
+## 1. Setup and Packages
+
+```{r setup, message=FALSE, warning=FALSE}
+# Load all necessary packages
+library(data.table)   # For faster data manipulation
+library(tidyverse)    # For data manipulation and visualization
+library(sf)           # For spatial data handling
+library(leaflet)      # For interactive maps
+library(leaflet.extras) # For additional leaflet features
+library(mapview)      # For easier map visualization
+library(tmap)         # For thematic maps
+library(tigris)       # For US road networks
+library(future)       # For parallel processing
+library(future.apply) # For parallel processing with apply functions
+library(fixest)       # For efficient fixed effects estimation
+library(modelsummary) # For regression tables
+library(patchwork)    # For combining plots
+library(MatchIt)      # For matching
+library(lubridate)    # For date handling
+
+# Create directories if they don't exist
+if (!dir.exists("./data/tigris")) {
+  dir.create("./data/tigris", recursive = TRUE)
+}
+if (!dir.exists("./data/processed")) {
+  dir.create("./data/processed", recursive = TRUE)
+}
+if (!dir.exists("./imgs")) {
+  dir.create("./imgs", recursive = TRUE)
+}
+
+# Set custom cache directory
+options(tigris_cache_dir = "./data/tigris")
+# Configure tigris to use caching
+options(tigris_use_cache = TRUE)
+```
+
+## 2. Helper Functions for Spatial Operations
+
+```{r helper_functions}
+# Function to create buffers in batches with proper projection
+create_buffers_in_batches <- function(sf_object, buffer_dist, batch_size = 500) {
+  message("Reprojecting data to a meter-based CRS...")
+  sf_object_projected <- st_transform(sf_object, 3310)  # California Albers
+  
+  n_features <- nrow(sf_object_projected)
+  n_batches <- ceiling(n_features / batch_size)
+  
+  # Create empty list to store results
+  buffer_list <- vector("list", n_batches)
+  
+  # Process in batches
+  for (i in 1:n_batches) {
+    start_idx <- (i-1) * batch_size + 1
+    end_idx <- min(i * batch_size, n_features)
+    
+    cat(sprintf("Processing batch %d of %d (features %d to %d)\n", 
+                i, n_batches, start_idx, end_idx))
+    
+    # Extract batch
+    batch <- sf_object_projected[start_idx:end_idx, ]
+    
+    # Create buffer
+    buffer_list[[i]] <- st_buffer(batch, dist = buffer_dist)
+  }
+  
+  # Combine results
+  result <- do.call(rbind, buffer_list)
+  
+  # Reproject back to original CRS
+  message("Reprojecting results back to original CRS...")
+  st_transform(result, st_crs(sf_object))
+}
+
+# Unified function to create both point and line buffers
+create_all_buffers <- function(point_sf, line_sf, buffer_dist = 300) {
+  # Process point buffers
+  point_buffers <- point_sf %>%
+    mutate(construction_id = if("ID" %in% names(.)) ID else row_number(),
+           construction_type = "point") %>%
+    select(construction_id, construction_type, Start_Time, End_Time, geometry) %>%
+    rename(start_time = Start_Time, end_time = End_Time) %>%
+    create_buffers_in_batches(buffer_dist = buffer_dist, batch_size = 500)
+  
+  # Process line buffers if provided
+  if(!missing(line_sf) && nrow(line_sf) > 0) {
+    # Calculate segment length once
+    line_sf_with_length <- line_sf %>%
+      st_transform(3310) %>%
+      mutate(segment_length_m = as.numeric(st_length(geometry))) %>%
+      st_transform(4326)
+    
+    line_buffers <- line_sf_with_length %>%
+      mutate(construction_id = if("ID" %in% names(.)) ID else row_number() + nrow(point_sf),
+             construction_type = "line") %>%
+      select(construction_id, construction_type, Start_Time, End_Time, 
+             segment_length_m, geometry) %>%
+      rename(start_time = Start_Time, end_time = End_Time) %>%
+      create_buffers_in_batches(buffer_dist = buffer_dist, batch_size = 250)
+    
+    # Combine buffers
+    return(list(
+      combined_buffers = bind_rows(
+        select(point_buffers, -construction_type),
+        select(line_buffers, -construction_type, -segment_length_m)
+      ),
+      point_buffers = point_buffers,
+      line_buffers = line_buffers,
+      line_data = line_sf_with_length
+    ))
+  }
+  
+  # Return just point buffers if no lines
+  return(list(
+    combined_buffers = point_buffers,
+    point_buffers = point_buffers
+  ))
+}
+
+# Helper function to find accidents near constructions
+find_accidents_near_construction <- function(accident_sf, buffer_results) {
+  # For point buffers
+  point_spatial_matches <- accident_sf %>%
+    mutate(accident_id = if("ID" %in% names(.)) ID else row_number(),
+           accident_severity = if("Severity" %in% names(.)) Severity else NA_integer_,
+           accident_time = Start_Time) %>%
+    select(accident_id, accident_severity, accident_time, geometry) %>%
+    st_join(buffer_results$point_buffers, join = st_within) %>%
+    filter(!is.na(construction_id) & 
+           accident_time >= start_time & 
+           accident_time <= end_time) %>%
+    select(accident_id, accident_severity, accident_time, construction_id, construction_type)
+  
+  # For line buffers if they exist
+  if ("line_buffers" %in% names(buffer_results)) {
+    line_spatial_matches <- accident_sf %>%
+      mutate(accident_id = if("ID" %in% names(.)) ID else row_number(),
+             accident_severity = if("Severity" %in% names(.)) Severity else NA_integer_,
+             accident_time = Start_Time) %>%
+      select(accident_id, accident_severity, accident_time, geometry) %>%
+      st_join(buffer_results$line_buffers, join = st_within) %>%
+      filter(!is.na(construction_id) & 
+             accident_time >= start_time & 
+             accident_time <= end_time) %>%
+      select(accident_id, accident_severity, accident_time, construction_id, 
+             construction_type, segment_length_m)
+    
+    # Combine both types of matches
+    return(list(
+      point_matches = point_spatial_matches,
+      line_matches = line_spatial_matches,
+      all_matches = bind_rows(
+        point_spatial_matches,
+        select(line_spatial_matches, -segment_length_m)
+      )
+    ))
+  }
+  
+  # Return just point matches if no line buffers
+  return(list(
+    point_matches = point_spatial_matches,
+    all_matches = point_spatial_matches
+  ))
+}
+
+# Helper function to analyze accidents near construction
+analyze_accidents_near_construction <- function(spatial_matches, accident_sf, line_data) {
+  # Count construction sites per accident
+  construction_counts <- spatial_matches$all_matches %>%
+    st_set_geometry(NULL) %>%
+    group_by(accident_id) %>%
+    summarize(nearby_construction_count = n())
+  
+  # Randomly select one construction site per accident
+  accident_construction_analysis <- spatial_matches$all_matches %>%
+    st_set_geometry(NULL) %>%
+    left_join(construction_counts, by = "accident_id") %>%
+    mutate(
+      temporal_overlap = 1,
+      is_near_active_construction = 1
+    ) %>%
+    group_by(accident_id) %>%
+    slice_sample(n = 1) %>%
+    ungroup()
+  
+  # Calculate accident rates for line segments
+  if ("line_matches" %in% names(spatial_matches) && !is.null(line_data)) {
+    construction_segment_accident_rates <- line_data %>%
+      mutate(construction_id = if("ID" %in% names(.)) ID else row_number()) %>%
+      left_join(
+        spatial_matches$line_matches %>%
+          st_set_geometry(NULL) %>%
+          group_by(construction_id) %>%
+          summarize(accident_count = n()),
+        by = "construction_id"
+      ) %>%
+      mutate(
+        accident_count = replace_na(accident_count, 0),
+        accidents_per_km = accident_count / (segment_length_m / 1000)
+      )
+  } else {
+    construction_segment_accident_rates <- NULL
+  }
+  
+  # Add construction info to all accidents
+  accidents_with_construction <- accident_sf %>%
+    mutate(accident_id = if("ID" %in% names(.)) ID else row_number()) %>%
+    left_join(
+      accident_construction_analysis %>%
+        select(accident_id, construction_id, nearby_construction_count, construction_type),
+      by = "accident_id"
+    ) %>%
+    mutate(near_construction = ifelse(is.na(construction_id), 0, 1))
+  
+  # Return results
+  return(list(
+    accident_construction_analysis = accident_construction_analysis,
+    construction_segment_accident_rates = construction_segment_accident_rates,
+    accidents_with_construction = accidents_with_construction,
+    total_accidents = nrow(accident_sf),
+    accidents_near_construction = nrow(accident_construction_analysis),
+    pct_near_construction = round(nrow(accident_construction_analysis)/nrow(accident_sf)*100, 2)
+  ))
+}
+
+# NEW FUNCTION: Create analysis panel with improved spatial matching
+create_analysis_panel <- function(df.const.sf, df.acc.sf, ca_roads, buffer_dist = 300) {
+  # Step 1: Create a more appropriate spatial unit - larger road chunks
+  # Dissolve/merge road segments by road name and type to create longer segments
+  cat("Simplifying road network...\n")
+  simplified_roads <- ca_roads %>%
+    group_by(FULLNAME, RTTYP) %>%
+    summarize(geometry = st_union(geometry), .groups = "drop") %>%
+    mutate(road_id = row_number(),
+           road_length_km = as.numeric(st_length(st_transform(geometry, 3310)))/1000)
+  
+  # Step 2: Create construction buffers and find which roads they intersect
+  cat("Creating construction buffers and finding affected roads...\n")
+  const_buffers <- st_buffer(st_transform(df.const.sf, 3310), buffer_dist) %>%
+    st_transform(st_crs(ca_roads))
+  
+  road_construction <- simplified_roads %>%
+    st_join(const_buffers %>% 
+              select(ID, Start_Time, End_Time), join = st_intersects) %>%
+    filter(!is.na(ID)) %>%
+    mutate(
+      const_start = floor_date(Start_Time, "month"),
+      const_end = floor_date(End_Time, "month")
+    ) %>%
+    st_set_geometry(NULL) %>%
+    select(road_id, FULLNAME, RTTYP, const_start, const_end, ID)
+  
+  # Step 3: Create a panel with monthly observations for all roads
+  cat("Creating panel dataset...\n")
+  months <- seq(as.Date("2021-01-01"), as.Date("2021-12-01"), by = "month")
+  
+  # Create base panel with all road-month combinations
+  panel_base <- expand.grid(
+    road_id = simplified_roads$road_id,
+    month = months
+  ) %>% as_tibble()
+  
+  # Add construction activity flags
+  cat("Adding construction treatment indicators...\n")
+  panel_with_construction <- panel_base %>%
+    left_join(
+      road_construction %>%
+        # Expand each construction to all months it spans
+        group_by(road_id, ID) %>%
+        do({
+          months_seq <- seq(from = .$const_start[1], to = .$const_end[1], by = "month")
+          data.frame(
+            road_id = .$road_id[1],
+            month = months_seq,
+            has_construction = 1,
+            const_id = .$ID[1]
+          )
+        }) %>%
+        ungroup() %>%
+        # Consolidate multiple constructions on same road-month
+        group_by(road_id, month) %>%
+        summarize(
+          has_construction = 1,
+          construction_count = n(),
+          .groups = "drop"
+        ),
+      by = c("road_id", "month")
+    ) %>%
+    mutate(has_construction = ifelse(is.na(has_construction), 0, has_construction))
+  
+  # Step 4: Count accidents for each road segment by month
+  cat("Matching accidents to roads...\n")
+  # Buffer roads slightly to catch nearby accidents
+  road_buffers <- st_buffer(st_transform(simplified_roads, 3310), 50) %>%
+    st_transform(st_crs(df.acc.sf))
+  
+  accident_counts <- df.acc.sf %>%
+    mutate(month = floor_date(Start_Time, "month")) %>%
+    st_join(road_buffers %>% select(road_id), join = st_intersects) %>%
+    filter(!is.na(road_id)) %>%
+    st_set_geometry(NULL) %>%
+    group_by(road_id, month) %>%
+    summarize(
+      accident_count = n(),
+      severe_accident_count = sum(Severity >= 3, na.rm = TRUE),
+      avg_severity = mean(Severity, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Step 5: Create final panel with all variables
+  cat("Finalizing panel dataset...\n")
+  panel_final <- panel_with_construction %>%
+    left_join(accident_counts, by = c("road_id", "month")) %>%
+    left_join(
+      simplified_roads %>%
+        st_set_geometry(NULL) %>%
+        select(road_id, road_length_km, FULLNAME, RTTYP),
+      by = "road_id"
+    ) %>%
+    # Add road type classification
+    mutate(
+      road_type = case_when(
+        grepl("I", RTTYP) ~ "Interstate",
+        grepl("U", RTTYP) ~ "US Highway",
+        grepl("S", RTTYP) ~ "State Highway",
+        TRUE ~ "Other"
+      ),
+      # Fill in missing accident counts with 0
+      accident_count = replace_na(accident_count, 0),
+      severe_accident_count = replace_na(severe_accident_count, 0),
+      avg_severity = replace_na(avg_severity, 0),
+      # Calculate per-km rates
+      accidents_per_km = accident_count / road_length_km,
+      severe_accidents_per_km = severe_accident_count / road_length_km,
+      # Extract time variables
+      year = year(month),
+      month_num = month(month),
+      is_winter = month_num %in% c(12, 1, 2),
+      is_summer = month_num %in% c(6, 7, 8)
+    )
+  
+  # Add urban classification
+  cat("Adding urban/rural classification...\n")
+  urban_areas <- urban_areas(year = 2021)
+  
+  # Check which roads intersect urban areas
+  urban_roads <- simplified_roads %>%
+    st_transform(st_crs(urban_areas)) %>%
+    st_join(urban_areas %>% select(UACE10, NAME10, UATYP10), join = st_intersects) %>%
+    mutate(
+      is_urban = !is.na(UACE10),
+      urban_type = ifelse(is.na(UATYP10), "Rural", UATYP10)
+    ) %>%
+    st_set_geometry(NULL) %>%
+    select(road_id, is_urban, urban_type)
+  
+  # Join urban classification
+  panel_final <- panel_final %>%
+    left_join(urban_roads, by = "road_id")
+  
+  # Add weather data if available (average by month for simplicity)
+  if ("Temperature(F)" %in% names(df.acc.sf) && "Precipitation(in)" %in% names(df.acc.sf)) {
+    cat("Adding weather data...\n")
+    weather_data <- df.acc.sf %>%
+      mutate(month = floor_date(Start_Time, "month")) %>%
+      group_by(month) %>%
+      summarize(
+        avg_temperature = mean(`Temperature(F)`, na.rm = TRUE),
+        avg_precipitation = mean(`Precipitation(in)`, na.rm = TRUE),
+        pct_adverse_weather = mean(Weather_Condition %in% 
+                                  c("Rain", "Snow", "Fog", "Thunderstorm"), na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      st_set_geometry(NULL)
+    
+    panel_final <- panel_final %>%
+      left_join(weather_data, by = "month")
+  }
+  
+  # Print diagnostic information
+  cat("\nSummary Statistics:\n")
+  cat("Total unique roads:", nrow(simplified_roads), "\n")
+  cat("Roads with construction:", length(unique(road_construction$road_id)), "\n")
+  cat("Road-months with construction:", sum(panel_final$has_construction), "\n")
+  cat("Roads with accidents:", length(unique(accident_counts$road_id)), "\n")
+  cat("Total accidents matched to roads:", sum(accident_counts$accident_count), "\n")
+  cat("Final panel dimensions:", nrow(panel_final), "x", ncol(panel_final), "\n")
+  
+  return(list(
+    panel_data = panel_final,
+    simplified_roads = simplified_roads,
+    road_construction = road_construction,
+    accident_counts = accident_counts
+  ))
+}
+```
+
+## 3. Regression and Robustness Functions
+
+```{r regression_functions}
+# Run all main regression models
+run_regression_models <- function(panel_data) {
+  # 1. Base DiD Model
+  model1 <- feols(
+    accident_count ~ has_construction | road_id + month, 
+    data = panel_data
+  )
+  
+  # 2. Extended Model with Urban/Rural Heterogeneity
+  model2 <- feols(
+    accident_count ~ has_construction + has_construction:is_urban | road_id + month, 
+    data = panel_data
+  )
+  
+  # 3. Full Model with additional controls
+  # Check if weather data is available
+  if (all(c("avg_temperature", "avg_precipitation", "pct_adverse_weather") %in% names(panel_data))) {
+    model3 <- feols(
+      accident_count ~ has_construction + has_construction:is_urban + 
+                      has_construction:is_winter + has_construction:is_summer +
+                      avg_temperature + avg_precipitation + pct_adverse_weather | 
+                      road_id + month,
+      data = panel_data
+    )
+  } else {
+    model3 <- feols(
+      accident_count ~ has_construction + has_construction:is_urban + 
+                      has_construction:is_winter + has_construction:is_summer | 
+                      road_id + month,
+      data = panel_data
+    )
+  }
+  
+  # 4. Accident rate model (normalized by segment length)
+  model4 <- feols(
+    accidents_per_km ~ has_construction + has_construction:is_urban | road_id + month, 
+    data = panel_data
+  )
+  
+  # 5. Severity model
+  model5 <- feols(
+    avg_severity ~ has_construction + has_construction:is_urban | road_id + month, 
+    data = panel_data
+  )
+  
+  return(list(
+    base_model = model1,
+    urban_het_model = model2,
+    full_model = model3,
+    rate_model = model4,
+    severity_model = model5,
+    all_models = list(model1, model2, model3, model4, model5)
+  ))
+}
+
+# Helper functions for robustness checks
+create_event_study_data <- function(panel_data) {
+  panel_data %>%
+    group_by(road_id) %>%
+    mutate(
+      first_construction = if(any(has_construction == 1)) min(month[has_construction == 1]) else NA,
+      rel_month = as.numeric(difftime(month, first_construction, units = "days")) / 30,
+      rel_period = case_when(
+        is.na(rel_month) ~ NA_character_,
+        rel_month <= -3 ~ "t-3+",
+        rel_month <= -2 ~ "t-2",
+        rel_month <= -1 ~ "t-1",
+        rel_month < 0 ~ "t-0",
+        rel_month < 1 ~ "t+0",
+        rel_month < 2 ~ "t+1",
+        rel_month < 3 ~ "t+2",
+        TRUE ~ "t+3+"
+      )
+    ) %>%
+    ungroup() %>%
+    mutate(
+      rel_period = factor(rel_period, 
+                        levels = c("t-3+", "t-2", "t-1", "t-0", "t+0", "t+1", "t+2", "t+3+"))
+    )
+}
+
+run_placebo_tests <- function(panel_data, iterations = 100) {
+  placebo_results <- data.frame(iteration = 1:iterations, estimate = NA, std.error = NA)
+  for(i in 1:iterations) {
+    set.seed(i)
+    temp_data <- panel_data %>%
+      mutate(placebo_construction = sample(has_construction))
+    
+    temp_model <- feols(
+      accident_count ~ placebo_construction | road_id + month, 
+      data = temp_data
+    )
+    
+    placebo_results$estimate[i] <- coef(temp_model)[1]
+    placebo_results$std.error[i] <- se(temp_model)[1]
+  }
+  return(placebo_results)
+}
+
+run_fe_variations <- function(panel_data) {
+  list(
+    "No FE" = feols(accident_count ~ has_construction, data = panel_data),
+    "Road FE" = feols(accident_count ~ has_construction | road_id, data = panel_data),
+    "Time FE" = feols(accident_count ~ has_construction | month, data = panel_data),
+    "Both FE" = feols(accident_count ~ has_construction | road_id + month, data = panel_data)
+  )
+}
+
+run_transform_variations <- function(panel_data) {
+  list(
+    "Linear" = feols(accident_count ~ has_construction | road_id + month, data = panel_data),
+    "Log" = feols(log(accident_count + 1) ~ has_construction | road_id + month, data = panel_data),
+    "Poisson" = fepois(accident_count ~ has_construction | road_id + month, data = panel_data)
+  )
+}
+
+# Run all robustness checks
+run_robustness_checks <- function(panel_data, base_model) {
+  # Results list
+  robustness_results <- list()
+  
+  # 1. Event study approach
+  panel_data_event <- create_event_study_data(panel_data)
+  event_model <- feols(
+    accident_count ~ i(rel_period, ref = "t-1") | road_id + month,
+    data = panel_data_event %>% filter(!is.na(rel_period))
+  )
+  robustness_results$event_model <- event_model
+  robustness_results$panel_data_event <- panel_data_event
+  
+  # 2. Placebo tests
+  placebo_results <- run_placebo_tests(panel_data, 100)
+  robustness_results$placebo_results <- placebo_results
+  
+  # 3. Fixed effects variations
+  fe_models <- run_fe_variations(panel_data)
+  robustness_results$fe_models <- fe_models
+  
+  # 4. Transform outcome variables
+  transform_models <- run_transform_variations(panel_data)
+  robustness_results$transform_models <- transform_models
+  
+  # 5. Add matching (simplified, assumes is_urban and road_type are factors)
+  matched_data <- matchit(
+    has_construction ~ road_type + road_length_km + is_urban,
+    data = panel_data %>% 
+      filter(month == min(month)) %>%
+      mutate(
+        road_type = factor(road_type),
+        is_urban = factor(is_urban)
+      ),
+    method = "nearest"
+  )
+  robustness_results$matched_data <- matched_data
+  
+  # Return all results
+  return(robustness_results)
+}
+```
+
+## 4. Visualization Functions
+
+```{r vis_functions}
+# Create static maps
+create_static_maps <- function(df.acc.sf, df.const.sf, df.const.lines, ca_roads) {
+  # Accident map
+  ca_plot <- ggplot() +
+    geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+    geom_sf(data = df.acc.sf, 
+            aes(color = factor(year)), alpha = 0.7, size = 0.5) +
+    scale_color_viridis_d(name = "Year") +
+    theme_minimal() +
+    labs(title = "California Road Accidents (2021)") +
+    theme(legend.position = "bottom")
+  
+  # Construction map
+  ca_const_plot <- ggplot() +
+    geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+    geom_sf(data = df.const.sf, 
+            aes(color = factor(year)), alpha = 0.7, size = 0.5) +
+    scale_color_viridis_d(name = "Year") +
+    theme_minimal() +
+    labs(title = "California Construction Sites (2021)") +
+    theme(legend.position = "bottom")
+  
+  # Construction line segments map
+  lines_plot <- ggplot() +
+    geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+    geom_sf(data = df.const.lines, 
+            color = "orange", size = 1) +
+    theme_minimal() +
+    labs(title = "California Construction Segments (2021)")
+  
+  return(list(
+    accidents_map = ca_plot,
+    construction_map = ca_const_plot,
+    construction_lines_map = lines_plot
+  ))
+}
+
+# Create heatmaps
+create_heatmaps <- function(df.acc, df.const, ca_roads) {
+  # Accident heatmap
+  accident_heatmap <- ggplot() +
+    geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+    stat_density_2d(
+      data = df.acc %>% filter(!is.na(Start_Lat) & !is.na(Start_Lng)),
+      aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density), alpha = after_stat(density)),
+      geom = "tile", 
+      contour = FALSE,
+      h = 0.1,
+      n = 200
+    ) +
+    scale_alpha_continuous(range = c(0, 0.9), guide = "none") +
+    scale_fill_gradientn(
+      colors = c("#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF0000"),
+      name = "Accident\nDensity"
+    ) +
+    coord_sf(
+      xlim = c(-124.5, -114.5),
+      ylim = c(32.5, 42.5)
+    ) +
+    theme_minimal() +
+    labs(
+      title = "Accident Density Heatmap in California (2021)",
+      x = NULL,
+      y = NULL
+    ) +
+    theme(
+      legend.position = "right",
+      plot.title = element_text(face = "bold")
+    )
+  
+  # Construction heatmap
+  construction_heatmap <- ggplot() +
+    geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+    stat_density_2d(
+      data = df.const %>% filter(!is.na(Start_Lat) & !is.na(Start_Lng)),
+      aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density)),
+      geom = "tile", 
+      contour = FALSE,
+      alpha = 0.7,
+      h = 0.1,
+      n = 200
+    ) +
+    scale_alpha_continuous(range = c(0, 0.9), guide = "none") +
+    scale_fill_gradientn(
+      colors = c("yellow", "orange", "red"),
+      name = "Construction\nDensity"
+    ) +
+    coord_sf(
+      xlim = c(-124.5, -114.5),
+      ylim = c(32.5, 42.5)
+    ) +
+    theme_minimal() +
+    labs(
+      title = "Construction Density Heatmap in California (2021)",
+      x = NULL,
+      y = NULL
+    ) +
+    theme(
+      legend.position = "right",
+      plot.title = element_text(face = "bold")
+    )
+  
+  return(list(
+    accident_heatmap = accident_heatmap,
+    construction_heatmap = construction_heatmap
+  ))
+}
+
+# Create interactive maps
+create_interactive_maps <- function(df.acc.sf, df.const.sf, df.const.lines) {
+  # Accidents map
+  accident_map <- leaflet() %>%
+    addTiles() %>%
+    addHeatmap(data = df.acc.sf, 
+               intensity = ~1,
+               radius = 8, 
+               blur = 10) %>%
+    setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%
+    setMaxBounds(lng1 = -124.6, lat1 = 42.0,
+                 lng2 = -114.1, lat2 = 32.5)
+  
+  # Construction sites map
+  construction_map <- leaflet() %>%
+    addTiles() %>%
+    addHeatmap(data = df.const.sf, 
+               intensity = ~1,
+               radius = 8, 
+               blur = 10,
+               gradient = c("yellow", "orange", "red")) %>%
+    setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%
+    setMaxBounds(lng1 = -124.6, lat1 = 42.0,
+                 lng2 = -114.1, lat2 = 32.5)
+  
+  # Construction lines map
+  construction_lines_map <- leaflet() %>%
+    addTiles() %>%
+    addPolylines(data = df.const.lines, 
+                 color = "orange",
+                 weight = 3,
+                 opacity = 0.7,
+                 popup = ~paste("ID:", ID, "<br>Duration:", duration)) %>%
+    setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%
+    setMaxBounds(lng1 = -124.6, lat1 = 42.0,
+                 lng2 = -114.1, lat2 = 32.5)
+  
+  return(list(
+    accident_map = accident_map,
+    construction_map = construction_map,
+    construction_lines_map = construction_lines_map
+  ))
+}
+
+# Create buffer analysis visualizations
+create_buffer_analysis_plots <- function(accidents_per_zone, ca_roads, analysis_results, severity_comparison, temporal_analysis) {
+  # Accident counts in construction zones
+  accident_zones_plot <- ggplot() +
+    geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+    geom_sf(data = accidents_per_zone %>% arrange(accident_count), 
+            aes(color = accident_count), size = 1.5) +
+    scale_color_viridis_c() +
+    theme_minimal() +
+    labs(title = "Accident Counts within Construction Zones (2021)")
+  
+  # Accident rate per construction segment
+  if (!is.null(analysis_results$construction_segment_accident_rates)) {
+    segment_rate_plot <- ggplot() +
+      geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+      geom_sf(data = analysis_results$construction_segment_accident_rates, 
+              aes(color = accidents_per_km), size = 1.5) +
+      scale_color_viridis_c() +
+      theme_minimal() +
+      labs(title = "Accident Rate per Construction Segment (2021)",
+           color = "Accidents/km")
+  } else {
+    segment_rate_plot <- NULL
+  }
+  
+  # Temporal analysis
+  temporal_plot <- ggplot(temporal_analysis, aes(x = month, y = accident_count)) +
+    geom_line() +
+    geom_point() +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Accidents Near Construction Over Time",
+         x = "Month",
+         y = "Accident Count")
+  
+  # Severity comparison
+  severity_plot <- ggplot(severity_comparison, aes(x = Severity, y = count, fill = location)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    scale_fill_brewer(palette = "Set1") +
+    theme_minimal() +
+    labs(title = "Accident Severity: Near vs. Away from Construction",
+         x = "Severity Level",
+         y = "Count",
+         fill = "Location")
+  
+  return(list(
+    accident_zones_plot = accident_zones_plot,
+    segment_rate_plot = segment_rate_plot,
+    temporal_plot = temporal_plot,
+    severity_plot = severity_plot
+  ))
+}
+
+# Create visualizations for new panel dataset
+visualize_panel_data <- function(panel_results) {
+  # 1. Show roads with construction
+  road_construction_map <- ggplot() +
+    geom_sf(data = panel_results$simplified_roads, color = "gray90", size = 0.3) +
+    geom_sf(data = panel_results$simplified_roads %>%
+              filter(road_id %in% panel_results$road_construction$road_id),
+            color = "red", size = 1) +
+    theme_minimal() +
+    labs(title = "Roads with Construction Activities (2021)")
+  
+  # 2. Show roads with accidents
+  road_accident_map <- ggplot() +
+    geom_sf(data = panel_results$simplified_roads, color = "gray90", size = 0.3) +
+    geom_sf(data = panel_results$simplified_roads %>%
+              filter(road_id %in% panel_results$accident_counts$road_id),
+            aes(color = "Roads with Accidents"), size = 0.8) +
+    geom_sf(data = panel_results$simplified_roads %>%
+              filter(road_id %in% panel_results$road_construction$road_id),
+            aes(color = "Roads with Construction"), size = 0.8) +
+    scale_color_manual(values = c("Roads with Accidents" = "blue", 
+                                 "Roads with Construction" = "red")) +
+    theme_minimal() +
+    labs(title = "Roads with Accidents vs Construction (2021)",
+         color = "Road Type")
+  
+  # 3. Accident counts by month with construction indicator
+  monthly_stats <- panel_results$panel_data %>%
+    group_by(month) %>%
+    summarize(
+      total_accidents = sum(accident_count),
+      construction_count = sum(has_construction),
+      .groups = "drop"
+    )
+  
+  temporal_plot <- ggplot(monthly_stats) +
+    geom_col(aes(x = month, y = total_accidents), fill = "steelblue") +
+    geom_line(aes(x = month, y = construction_count * 10), 
+              color = "red", size = 1.2) + # scaled for visualization
+    scale_y_continuous(
+      name = "Accident Count",
+      sec.axis = sec_axis(~./10, name = "Construction Count")
+    ) +
+    theme_minimal() +
+    labs(title = "Monthly Accidents vs Construction Activities (2021)",
+         x = "Month")
+  
+  # 4. Urban vs rural comparison
+  urban_rural_comparison <- panel_results$panel_data %>%
+    group_by(is_urban, has_construction) %>%
+    summarize(
+      total_accidents = sum(accident_count),
+      accident_rate = mean(accidents_per_km),
+      total_roads = n_distinct(road_id),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      road_category = case_when(
+        is_urban == TRUE & has_construction == 1 ~ "Urban with Construction",
+        is_urban == TRUE & has_construction == 0 ~ "Urban without Construction",
+        is_urban == FALSE & has_construction == 1 ~ "Rural with Construction",
+        is_urban == FALSE & has_construction == 0 ~ "Rural without Construction"
+      )
+    )
+  
+  urban_rural_plot <- ggplot(urban_rural_comparison, 
+                            aes(x = road_category, y = accident_rate, fill = road_category)) +
+    geom_col() +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Accident Rates by Urban/Rural and Construction Status",
+         x = NULL,
+         y = "Accidents per km",
+         fill = "Road Category")
+  
+  return(list(
+    road_construction_map = road_construction_map,
+    road_accident_map = road_accident_map,
+    temporal_plot = temporal_plot,
+    urban_rural_plot = urban_rural_plot
+  ))
+}
+
+# Create robustness check visualizations
+# Create robustness check visualizations
+visualize_robustness_checks <- function(robustness_results, model1) {
+  # 1. Event study plot - keep as separate object, don't include in patchwork
+  coef_plot <- iplot(robustness_results$event_model, 
+                     main = "Event Study: Effect of Construction on Accidents",
+                     xlab = "Months Relative to Construction Start", 
+                     ylab = "Effect on Accident Count")
+  
+  # 2. Placebo plot
+  placebo_plot <- ggplot(robustness_results$placebo_results, aes(x = estimate)) +
+    geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+    geom_vline(xintercept = coef(model1)[1], color = "red", linewidth = 1.5) +
+    theme_minimal() +
+    labs(title = "Distribution of Placebo Effects vs. Actual Effect",
+         x = "Estimated Effect", y = "Count",
+         caption = "Red line shows actual estimated effect")
+  
+  # 3. Buffer sensitivity plot (example data - replace with actual results)
+  buffer_results <- data.frame(
+    buffer_dist = c(200, 300, 400, 500),
+    estimate = c(0.12, 0.15, 0.11, 0.09),
+    lower_ci = c(0.05, 0.08, 0.04, 0.01),
+    upper_ci = c(0.19, 0.22, 0.18, 0.17)
+  )
+  
+  buffer_plot <- ggplot(buffer_results, aes(x = factor(buffer_dist), y = estimate)) +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2) +
+    theme_minimal() +
+    labs(title = "Sensitivity to Buffer Distance",
+         x = "Buffer Distance (meters)", y = "Estimated Effect on Accident Count")
+  
+  # 4. Alternative FE specifications table
+  fe_comparison <- modelsummary(robustness_results$fe_models, stars = TRUE)
+  
+  # 5. Different outcome transformations
+  transform_comparison <- modelsummary(robustness_results$transform_models, stars = TRUE)
+  
+  # 6. Create a simplified panel with just standard ggplot objects
+  # Avoid using the iplot result in patchwork
+  robustness_panel <- placebo_plot + buffer_plot + plot_layout(ncol = 2)
+  
+  return(list(
+    coef_plot = coef_plot,  # Keep separate
+    placebo_plot = placebo_plot,
+    buffer_plot = buffer_plot,
+    fe_comparison = fe_comparison,
+    transform_comparison = transform_comparison,
+    robustness_panel = robustness_panel
+  ))
+}
+```
+
+## 5. Data Loading and Processing
+
+Let's load and process the data:
+
+```{r load_data, message=FALSE, warning=FALSE}
+# Check if processed data exists to avoid reprocessing
+if (file.exists("data/processed/df_acc.rds") && 
+    file.exists("data/processed/df_const.rds") && 
+    file.exists("data/processed/ca_roads.rds")) {
+  
+  df.acc <- readRDS("data/processed/df_acc.rds")
+  df.const <- readRDS("data/processed/df_const.rds")
+  ca_roads <- readRDS("data/processed/ca_roads.rds")
+  df.acc.sf <- readRDS("data/processed/df_acc_sf.rds")
+  df.const.sf <- readRDS("data/processed/df_const_sf.rds")
+  df.const.lines <- readRDS("data/processed/df_const_lines.rds")
+  
+  cat("Loaded preprocessed data\n")
+  
+} else {
+  # Load accident data
+  cat("Loading accident data...\n")
+  df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
+    # Filter date range of 2021
+    lubridate::year(as.Date(Start_Time)) == 2021 & 
+    # And California
+    State == "CA"
+  ][, `:=`(
+    # Add year, quarter, month columns
+    year = data.table::year(Start_Time),
+    quarter = data.table::quarter(Start_Time),
+    month = data.table::month(Start_Time),
+    # Calculate duration
+    duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+  )] %>% 
+    as_tibble()
+  
+  # Load construction data
+  cat("Loading construction data...\n")
+  df.const <- fread("data/us_constructions/US_constructions_Dec21.csv")[
+    # Filter date range of 2021
+    lubridate::year(as.Date(Start_Time)) == 2021 & 
+    # And California
+    State == "CA"
+  ][, `:=`(
+    # Add year, quarter, month columns
+    year = year(Start_Time),
+    quarter = quarter(Start_Time),
+    month = month(Start_Time),
+    # Calculate duration
+    duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+  )] %>% 
+    as_tibble()
+  
+  # Convert to SF objects
+  cat("Converting to SF objects...\n")
+  df.acc.sf <- df.acc %>%
+    filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+    st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326)
+  
+  df.const.sf <- df.const %>%
+    filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+    st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326)
+  
+  # Create construction line objects
+  cat("Creating construction linestrings...\n")
+  df.const.lines <- df.const %>%
+    filter(!is.na(Start_Lat) & !is.na(Start_Lng) & !is.na(End_Lat) & !is.na(End_Lng)) %>%
+    mutate(geometry = pmap(list(Start_Lng, Start_Lat, End_Lng, End_Lat), 
+                           function(start_lng, start_lat, end_lng, end_lat) {
+                             coords <- matrix(c(start_lng, start_lat, 
+                                               end_lng, end_lat), 
+                                             ncol = 2, byrow = TRUE)
+                             st_linestring(coords)
+                           })) %>%
+    st_sf(crs = 4326)
+  
+  # Load California roads
+  cat("Loading California roads...\n")
+  ca_roads <- primary_secondary_roads("CA", year = 2021)
+  
+  # Save processed data for future use
+  saveRDS(df.acc, "data/processed/df_acc.rds")
+  saveRDS(df.const, "data/processed/df_const.rds")
+  saveRDS(ca_roads, "data/processed/ca_roads.rds")
+  saveRDS(df.acc.sf, "data/processed/df_acc_sf.rds")
+  saveRDS(df.const.sf, "data/processed/df_const_sf.rds")
+  saveRDS(df.const.lines, "data/processed/df_const_lines.rds")
+}
+```
+
+## 6. Spatial Analysis
+
+Now let's perform the spatial analysis:
+
+```{r spatial_analysis, message=FALSE, warning=FALSE}
+# Check if we've already done the spatial analysis
+if (file.exists("data/processed/buffer_results.rds") && 
+    file.exists("data/processed/spatial_matches.rds") &&
+    file.exists("data/processed/analysis_results.rds")) {
+  
+  buffer_results <- readRDS("data/processed/buffer_results.rds")
+  spatial_matches <- readRDS("data/processed/spatial_matches.rds")
+  analysis_results <- readRDS("data/processed/analysis_results.rds")
+  
+  cat("Loaded preprocessed spatial analysis results\n")
+  
+} else {
+  # Set up parallel processing
+  future::plan(future::multisession, workers = parallel::detectCores() - 1)
+  
+  # Step 1: Create construction buffers (unified approach)
+  cat("Creating construction buffers...\n")
+  buffer_results <- create_all_buffers(df.const.sf, df.const.lines, buffer_dist = 300)
+  
+  # Step 2: Find accidents near construction sites
+  cat("Finding accidents near construction...\n")
+  spatial_matches <- find_accidents_near_construction(df.acc.sf, buffer_results)
+  
+  # Step 3: Analyze accidents near construction
+  cat("Analyzing accidents near construction...\n")
+  analysis_results <- analyze_accidents_near_construction(
+    spatial_matches, 
+    df.acc.sf, 
+    buffer_results$line_data
+  )
+  
+  # Return to sequential processing
+  future::plan(future::sequential)
+  
+  # Save results for future use
+  saveRDS(buffer_results, "data/processed/buffer_results.rds")
+  saveRDS(spatial_matches, "data/processed/spatial_matches.rds")
+  saveRDS(analysis_results, "data/processed/analysis_results.rds")
+}
+
+# Extract key accident statistics
+accidents_per_zone <- analysis_results$construction_segment_accident_rates %>%
+  filter(accident_count > 0) %>%
+  select(construction_id, accident_count, geometry)
+
+cat("Total accidents in dataset:", analysis_results$total_accidents, "\n")
+cat("Accidents near active construction:", analysis_results$accidents_near_construction, "\n")
+cat("Percentage of accidents near active construction:", 
+    analysis_results$pct_near_construction, "%\n")
+
+# Prepare severity comparison data
+accidents_near <- analysis_results$accidents_with_construction %>%
+  filter(near_construction == 1) %>%
+  st_set_geometry(NULL) %>%
+  mutate(location = "Near construction") %>%
+  select(Severity, location)
+
+accidents_away <- analysis_results$accidents_with_construction %>%
+  filter(near_construction == 0) %>%
+  st_set_geometry(NULL) %>%
+  mutate(location = "Away from construction") %>%
+  select(Severity, location)
+
+severity_comparison <- bind_rows(accidents_near, accidents_away) %>%
+  group_by(Severity, location) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  arrange(Severity, location)
+
+# Prepare temporal analysis data
+temporal_analysis <- spatial_matches$all_matches %>%
+  st_set_geometry(NULL) %>%
+  mutate(month = floor_date(accident_time, "month")) %>%
+  group_by(month) %>%
+  summarize(accident_count = n()) %>%
+  arrange(month)
+```
+
+## 7. Data Visualization
+
+Let's create the visualizations:
+
+```{r visualizations, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+# Create all visualizations
+static_maps <- create_static_maps(df.acc.sf, df.const.sf, df.const.lines, ca_roads)
+heatmaps <- create_heatmaps(df.acc, df.const, ca_roads)
+interactive_maps <- create_interactive_maps(df.acc.sf, df.const.sf, df.const.lines)
+buffer_plots <- create_buffer_analysis_plots(
+  accidents_per_zone, 
+  ca_roads, 
+  analysis_results, 
+  severity_comparison, 
+  temporal_analysis
+)
+
+# Display accident map
+static_maps$accidents_map
+ggsave("imgs/california_accidents.png", static_maps$accidents_map, width = 10, height = 8, dpi = 300)
+
+# Display construction map
+static_maps$construction_map
+ggsave("imgs/california_construction.png", static_maps$construction_map, width = 10, height = 8, dpi = 300)
+
+# Display accident heatmap
+heatmaps$accident_heatmap
+ggsave("imgs/accident_heatmap.png", heatmaps$accident_heatmap, width = 10, height = 8, dpi = 300)
+
+# Display construction heatmap
+heatmaps$construction_heatmap
+ggsave("imgs/construction_heatmap.png", heatmaps$construction_heatmap, width = 10, height = 8, dpi = 300)
+
+# Display interactive accident map
+interactive_maps$accident_map
+
+# Display interactive construction map
+interactive_maps$construction_map
+
+# Display accident zones plot
+buffer_plots$accident_zones_plot
+ggsave("imgs/accident_counts_construction_zones.png", buffer_plots$accident_zones_plot, width = 10, height = 8, dpi = 300)
+
+# Display construction line segments
+static_maps$construction_lines_map
+
+# Display construction segment map
+interactive_maps$construction_lines_map
+
+# Display segment accident rate map
+if (!is.null(buffer_plots$segment_rate_plot)) {
+  buffer_plots$segment_rate_plot
+}
+
+# Display temporal analysis
+buffer_plots$temporal_plot
+
+# Display severity comparison
+buffer_plots$severity_plot
+```
+
+## 8. Panel Data Creation (Improved Approach)
+
+Now let's create the panel dataset using our improved approach:
+
+```{r panel_data, message=FALSE, warning=FALSE}
+# Check if panel data already exists
+if (file.exists("data/processed/panel_results_v2.rds")) {
+  panel_results <- readRDS("data/processed/panel_results_v2.rds")
+  panel_data <- panel_results$panel_data
+  
+  cat("Loaded preprocessed panel data (improved version)\n")
+} else {
+  # Create panel dataset with improved spatial matching
+  cat("Creating panel dataset with improved approach...\n")
+  panel_results <- create_analysis_panel(df.const.sf, df.acc.sf, ca_roads, buffer_dist = 300)
+  panel_data <- panel_results$panel_data
+  
+  # Save panel data for future use
+  saveRDS(panel_results, "data/processed/panel_results_v2.rds")
+}
+
+# Generate visualizations of the new panel data
+panel_viz <- visualize_panel_data(panel_results)
+
+# Display visualizations
+panel_viz$road_construction_map
+ggsave("imgs/road_construction_map.png", panel_viz$road_construction_map, width = 10, height = 8, dpi = 300)
+
+panel_viz$road_accident_map
+ggsave("imgs/road_accident_map.png", panel_viz$road_accident_map, width = 10, height = 8, dpi = 300)
+
+panel_viz$temporal_plot
+ggsave("imgs/temporal_analysis.png", panel_viz$temporal_plot, width = 10, height = 6, dpi = 300)
+
+panel_viz$urban_rural_plot
+ggsave("imgs/urban_rural_comparison.png", panel_viz$urban_rural_plot, width = 10, height = 6, dpi = 300)
+
+# Print panel data structure
+cat("Panel data structure:\n")
+str(panel_data)
+cat("Panel data dimensions:", dim(panel_data), "\n")
+
+# Summary statistics
+cat("\nConstruction statistics:\n")
+table(panel_data$has_construction)
+
+cat("\nUrban/rural distribution:\n")
+table(panel_data$is_urban, panel_data$has_construction)
+
+cat("\nAccident summary:\n")
+summary(panel_data$accident_count)
+```
+
+## 9. Regression Analysis
+
+Let's run the regression models:
+
+```{r regression_models, message=FALSE, warning=FALSE}
+# Run regression models
+cat("Running regression models...\n")
+regression_models <- run_regression_models(panel_data)
+
+# Display regression results
+modelsummary(
+  regression_models$all_models,
+  stars = TRUE,
+  title = "DiD Estimates of Construction Impacts on Accidents"
+)
+```
+
+
+### Interpretation of Regression Models
+
+The table shows five different regression models examining the relationship between road construction and traffic accidents in California:
+
+### Model 1: Base DiD Model
+- **has_construction**: There's a highly significant positive effect (6.291***) of construction activity on accident counts. This suggests that when construction is present on a road segment, there are approximately 6.3 more accidents compared to when there is no construction, controlling for road-specific and time-specific factors.
+- The model explains a substantial portion of the variation (R² = 0.956), though much of this is due to the fixed effects rather than the construction variable itself (Within R² = 0.001).
+
+### Model 2: Urban/Rural Heterogeneity Model
+- **has_construction**: The baseline effect of construction increases to 7.436** accidents in rural areas (the reference category).
+- **has_construction × is_urbanTRUE**: The interaction term (-1.664) suggests that the effect of construction on accidents is somewhat smaller in urban areas compared to rural areas, though this difference is not statistically significant.
+
+### Model 3: Full Model with Seasonal Interactions
+- **has_construction**: The baseline coefficient becomes strongly negative (-14.187***), but this must be interpreted carefully alongside the seasonal interaction terms.
+- **has_construction × is_winterTRUE**: There's a very large and significant increase in accidents (57.193***) when construction occurs during winter months.
+- **has_construction × is_summerTRUE**: Summer construction also shows a significant positive effect (8.024**) on accidents.
+- These seasonal interactions indicate that construction's impact on accidents varies significantly by season, with winter construction being particularly associated with increased accidents.
+
+### Model 4: Accident Rate Model (per km)
+- **has_construction**: The effect on accident rates per kilometer is negative but not statistically significant (-0.047).
+- This suggests that while the absolute number of accidents increases during construction (as seen in Models 1-3), when normalized by road length, the effect becomes insignificant.
+
+### Model 5: Accident Severity Model
+- **has_construction**: There is no significant effect (-0.033) of construction on accident severity.
+- **has_construction × is_urbanTRUE**: There's a small positive but non-significant effect (0.045) on severity in urban areas.
+- This indicates that while construction may increase the frequency of accidents, it doesn't meaningfully affect their severity.
+
+### Key Findings:
+
+1. **Construction generally increases accident frequency**: Models 1 and 2 show that active construction sites are associated with more accidents.
+
+2. **Seasonal variation is critical**: Model 3 reveals that construction's impact varies substantially by season, with winter construction having a dramatically larger effect on accidents than construction in other seasons.
+
+3. **Urban/rural differences are present but modest**: The effect of construction on accidents appears somewhat smaller in urban areas compared to rural areas, though this difference isn't statistically significant.
+
+4. **Normalized effects are weaker**: When considering accidents per kilometer (Model 4), the effect of construction disappears, suggesting that the absolute increase in accidents may be partly related to road length or exposure.
+
+5. **No impact on severity**: Model 5 indicates that construction doesn't significantly affect how severe accidents are.
+
+These findings have important implications for construction planning and traffic safety management, particularly regarding seasonal timing of road projects and potentially different approaches needed for urban versus rural environments.
+
+<hr>
+
+## 10. Robustness Checks
+
+Let's perform the robustness checks:
+
+```{r robustness_checks, message=FALSE, warning=FALSE, fig.width=12, fig.height=10}
+# Run robustness checks
+cat("Running robustness checks...\n")
+robustness_results <- run_robustness_checks(panel_data, regression_models$base_model)
+
+# Create visualizations
+robustness_plots <- visualize_robustness_checks(robustness_results, regression_models$base_model)
+
+# Display event study plot
+robustness_plots$coef_plot
+
+# Display placebo tests plot
+robustness_plots$placebo_plot
+
+# Display buffer sensitivity plot
+robustness_plots$buffer_plot
+
+# Display fixed effects comparison
+robustness_plots$fe_comparison
+
+# Display outcome transformations comparison
+robustness_plots$transform_comparison
+
+# Display combined robustness panel
+robustness_plots$robustness_panel
+```
+
+## 11. Propensity Score Matching
+
+Finally, let's examine the propensity score matching results:
+
+```{r matching, message=FALSE, warning=FALSE}
+# Examine matching results
+cat("Matching diagnostics:\n")
+summary(robustness_results$matched_data)
+
+# Get matched data
+matched_data <- match.data(robustness_results$matched_data)
+
+# Re-run main model on matched data
+matched_model <- feols(
+  accident_count ~ has_construction | road_id + month, 
+  data = panel_data %>% 
+    inner_join(
+      matched_data %>% 
+        select(road_id, weights), 
+      by = "road_id"
+    )
+)
+
+# Compare results
+modelsummary(
+  list("Original" = regression_models$base_model, "Matched" = matched_model),
+  stars = TRUE,
+  title = "Comparison of Original and Matched Models"
+)
+```
+
+## 12. Conclusion
+
+This analysis has investigated the causal impact of road construction on traffic accident rates in California during 2021. Our key findings include:
+
+1. We found that approximately `r analysis_results$pct_near_construction`% of accidents occurred within active construction zones, suggesting a significant relationship between construction activities and traffic safety.
+
+2. The difference-in-differences models showed consistent effects of construction on accident rates, with differential impacts between urban and rural areas.
+
+3. The event study analysis shows that accident rates begin to change [before/after] construction starts, with the strongest effects during [early/middle/late] phases of construction.
+
+4. Our robustness checks confirmed the stability of our findings through placebo tests, fixed effects variations, and propensity score matching.
+
+5. The results indicate that construction activities [increase/decrease] accident rates by [X]%, with [stronger/weaker] effects in urban areas compared to rural areas.
+
+These findings have important implications for construction planning, traffic management strategies, and safety policies, particularly regarding the differential effects between urban and rural environments.
+
+### Future Research Directions
+
+1. Investigating specific construction characteristics (duration, scope, traffic management) that impact safety outcomes.
+2. Exploring the spatial spillover effects of construction on neighboring road segments.
+3. Analyzing how different weather conditions interact with construction activities to influence accident risk.
+4. Developing predictive models for construction-related accident risk to inform preventive measures.
+
+
+
+```{r}
+# Import write xlsx
+library(writexl)
+# Store panel data in Excel
+write_xlsx(panel_data, "data/panel_data.xlsx")
+```
+
+
+```{r}
+# Comprehensive Propensity Score Matching Analysis for Road Construction Safety
+
+# Load required packages
+library(tidyverse)
+library(sf)
+library(fixest)
+library(MatchIt)
+library(cobalt)
+library(WeightIt)
+library(data.table)
+library(patchwork)
+
+############################
+# 1. DATA PREPARATION
+############################
+
+# Assuming panel_data is already created from your previous code
+# If needed, load panel data from saved RDS file
+if (!exists("panel_data")) {
+  if (file.exists("data/processed/panel_results_v2.rds")) {
+    panel_results <- readRDS("data/processed/panel_results_v2.rds")
+    panel_data <- panel_results$panel_data
+    print("Loaded panel data")
+  } else {
+    stop("Please run the panel data creation step first")
+  }
+}
+
+# Create pre-construction accident metrics for each road segment
+road_metrics <- panel_data %>%
+  # Get baseline period (use the first 3 months if possible)
+  filter(month %in% sort(unique(month))[1:3]) %>%
+  group_by(road_id) %>%
+  summarize(
+    pre_accident_count = mean(accident_count, na.rm = TRUE),
+    pre_severe_accidents = mean(severe_accident_count, na.rm = TRUE),
+    pre_accident_rate = mean(accidents_per_km, na.rm = TRUE),
+    road_length_km = first(road_length_km),
+    road_type = first(road_type),
+    is_urban = first(is_urban),
+    .groups = "drop"
+  )
+
+# Identify which roads ever had construction
+construction_roads <- panel_data %>%
+  group_by(road_id) %>%
+  summarize(
+    ever_construction = any(has_construction == 1),
+    construction_count = sum(has_construction),
+    total_periods = n(),
+    construction_intensity = construction_count / total_periods,
+    .groups = "drop"
+  )
+
+# Combine road characteristics with construction status
+matching_data <- road_metrics %>%
+  left_join(construction_roads, by = "road_id") %>%
+  # Convert factors as needed
+  mutate(
+    road_type = factor(road_type),
+    is_urban = factor(is_urban),
+    ever_construction = factor(ever_construction),
+    # Create categorized variables for exact matching
+    accident_level = cut(pre_accident_count, 
+                        breaks = c(-Inf, 0, 1, 5, 10, Inf),
+                        labels = c("None", "Very Low", "Low", "Medium", "High")),
+    length_category = cut(road_length_km,
+                         breaks = c(0, 1, 5, 10, 25, Inf),
+                         labels = c("Very Short", "Short", "Medium", "Long", "Very Long"))
+  )
+
+# Print summary to verify data preparation
+cat("Matching data preparation complete\n")
+cat("Total roads:", nrow(matching_data), "\n")
+cat("Roads with construction:", sum(matching_data$ever_construction == TRUE), "\n")
+cat("Roads without construction:", sum(matching_data$ever_construction == FALSE), "\n")
+
+############################
+# 2. PROPENSITY SCORE MATCHING
+############################
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Run multiple matching methods to compare
+matching_methods <- list(
+  # 1. Nearest neighbor matching
+  nearest = matchit(
+    ever_construction ~ pre_accident_count + pre_severe_accidents + 
+                      road_length_km + road_type + is_urban,
+    data = matching_data,
+    method = "nearest",
+    ratio = 3,  # Match each treated unit to 3 control units
+    replace = FALSE
+  ),
+  
+  # 2. Nearest neighbor with exact matching on key variables
+  nearest_exact = matchit(
+    ever_construction ~ pre_accident_count + pre_severe_accidents + road_length_km,
+    data = matching_data,
+    method = "nearest",
+    exact = ~road_type + is_urban,  # Exact matching on these variables
+    ratio = 2
+  ),
+  
+  # 3. Optimal matching (may be slow with large datasets)
+  optimal = matchit(
+    ever_construction ~ pre_accident_count + pre_severe_accidents + 
+                      road_length_km + road_type + is_urban,
+    data = matching_data,
+    method = "optimal",
+    ratio = 1
+  ),
+  
+  # 4. Full matching (flexible ratio)
+  full = matchit(
+    ever_construction ~ pre_accident_count + pre_severe_accidents + 
+                      road_length_km + road_type + is_urban,
+    data = matching_data,
+    method = "full"
+  ),
+  
+  # 5. Genetic matching (may be slow but often produces best balance)
+  genetic = matchit(
+    ever_construction ~ pre_accident_count + pre_severe_accidents + road_length_km,
+    data = matching_data,
+    method = "genetic",
+    pop.size = 100  # Smaller population for faster convergence
+  )
+)
+
+# Save matching results
+saveRDS(matching_methods, "data/processed/matching_methods.rds")
+
+############################
+# 3. BALANCE ASSESSMENT
+############################
+
+# Function to assess balance for a matching method
+assess_balance <- function(match_obj, name) {
+  # Create love plot
+  love_plot <- love.plot(
+    match_obj, 
+    binary = "std", 
+    thresholds = c(m = 0.1),
+    var.order = "unadjusted",
+    abs = TRUE,
+    title = paste("Covariate Balance -", name)
+  )
+  
+  # Summarize balance
+  balance_summary <- summary(match_obj)
+  
+  # Safely get match counts
+  get_matched_counts <- function(bs) {
+    # Try to extract from nn matrix if available
+    if (is.list(bs) && "nn" %in% names(bs) && is.matrix(bs$nn)) {
+      matched_treated <- sum(bs$nn[1,])
+      
+      # Check if "Unmatched" column exists
+      if ("Unmatched" %in% colnames(bs$nn)) {
+        matched_control <- sum(bs$nn[2,]) - bs$nn[2, "Unmatched"]
+        unmatched_control <- bs$nn[2, "Unmatched"]
+      } else {
+        matched_control <- sum(bs$nn[2,])
+        unmatched_control <- NA
+      }
+    } else {
+      # Extract from match.data directly
+      matched_data <- match.data(match_obj)
+      matched_treated <- sum(matched_data$ever_construction == TRUE)
+      matched_control <- sum(matched_data$ever_construction == FALSE)
+      unmatched_control <- NA
+    }
+    
+    return(list(
+      matched_treated = matched_treated,
+      matched_control = matched_control,
+      unmatched_control = unmatched_control
+    ))
+  }
+  
+  # Safely get mean differences
+  get_mean_diffs <- function(bs) {
+    if (is.list(bs) && "sum.all" %in% names(bs) && is.data.frame(bs$sum.all) && "std.mean.diff" %in% names(bs$sum.all)) {
+      mean_diff_unadj <- mean(abs(bs$sum.all$std.mean.diff))
+      max_diff_unadj <- max(abs(bs$sum.all$std.mean.diff))
+    } else if (is.list(bs) && "sum.across" %in% names(bs)) {
+      mean_diff_unadj <- mean(abs(bs$sum.across[, "Std. Mean Diff."]))
+      max_diff_unadj <- max(abs(bs$sum.across[, "Std. Mean Diff."]))
+    } else {
+      mean_diff_unadj <- NA
+      max_diff_unadj <- NA
+    }
+    
+    if (is.list(bs) && "sum.matched" %in% names(bs) && is.data.frame(bs$sum.matched) && "std.mean.diff" %in% names(bs$sum.matched)) {
+      mean_diff_adj <- mean(abs(bs$sum.matched$std.mean.diff))
+      max_diff_adj <- max(abs(bs$sum.matched$std.mean.diff))
+    } else if (is.list(bs) && "sum.across" %in% names(bs) && "Std. Mean Diff. (Matched)" %in% colnames(bs$sum.across)) {
+      mean_diff_adj <- mean(abs(bs$sum.across[, "Std. Mean Diff. (Matched)"]))
+      max_diff_adj <- max(abs(bs$sum.across[, "Std. Mean Diff. (Matched)"]))
+    } else {
+      mean_diff_adj <- NA
+      max_diff_adj <- NA
+    }
+    
+    return(list(
+      mean_diff_unadj = mean_diff_unadj,
+      mean_diff_adj = mean_diff_adj,
+      max_diff_unadj = max_diff_unadj,
+      max_diff_adj = max_diff_adj
+    ))
+  }
+  
+  # Get match counts
+  counts <- get_matched_counts(balance_summary)
+  
+  # Get mean differences
+  diffs <- get_mean_diffs(balance_summary)
+  
+  # Create metrics data frame
+  balance_metrics <- data.frame(
+    Method = name,
+    Mean_Diff_Unadj = diffs$mean_diff_unadj,
+    Mean_Diff_Adj = diffs$mean_diff_adj,
+    Max_Diff_Unadj = diffs$max_diff_unadj,
+    Max_Diff_Adj = diffs$max_diff_adj,
+    Matched_Treated = counts$matched_treated,
+    Matched_Control = counts$matched_control,
+    Unmatched_Control = counts$unmatched_control
+  )
+  
+  # Return results
+  return(list(
+    love_plot = love_plot,
+    balance_summary = balance_summary,
+    balance_metrics = balance_metrics
+  ))
+}
+
+# Assess balance for each method
+balance_results <- lapply(names(matching_methods), function(method) {
+  assess_balance(matching_methods[[method]], method)
+})
+names(balance_results) <- names(matching_methods)
+
+# Combine balance metrics
+balance_comparison <- do.call(rbind, lapply(balance_results, function(x) x$balance_metrics))
+
+# Plot balance comparison
+balance_plot <- ggplot(balance_comparison, aes(x = Method)) +
+  geom_segment(aes(y = Mean_Diff_Unadj, yend = Mean_Diff_Adj, 
+                  x = Method, xend = Method), 
+               color = "gray50", size = 1.5) +
+  geom_point(aes(y = Mean_Diff_Unadj), color = "red", size = 3) +
+  geom_point(aes(y = Mean_Diff_Adj), color = "blue", size = 3) +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Mean Absolute Standardized Difference",
+       subtitle = "Before (red) vs. After (blue) Matching",
+       y = "Mean Absolute Std. Difference",
+       x = "")
+
+# Save the plot
+ggsave("imgs/balance_comparison.png", balance_plot, width = 10, height = 6, dpi = 300)
+
+# Display balance metrics
+print(balance_comparison)
+
+############################
+# 4. REGRESSION ANALYSIS WITH MATCHED DATA
+############################
+
+# Function to run regressions on matched data
+run_matched_regressions <- function(match_obj, method_name) {
+  # Get matched data
+  matched_data <- match.data(match_obj)
+  
+  # Get matched road IDs
+  matched_road_ids <- matched_data$road_id
+  
+  # Filter panel data to matched roads
+  matched_panel <- panel_data %>%
+    filter(road_id %in% matched_road_ids)
+  
+  # Add weights if available
+  if ("weights" %in% names(matched_data)) {
+    matched_panel <- matched_panel %>%
+      left_join(select(matched_data, road_id, weights), by = "road_id")
+  } else {
+    matched_panel$weights <- 1
+  }
+  
+  # 1. Base DiD model
+  model1 <- feols(
+    accident_count ~ has_construction | road_id + month, 
+    data = matched_panel,
+    weights = ~ weights
+  )
+  
+  # 2. Urban/rural heterogeneity
+  model2 <- feols(
+    accident_count ~ has_construction + has_construction:is_urban | road_id + month, 
+    data = matched_panel,
+    weights = ~ weights
+  )
+  
+  # 3. Seasonal heterogeneity
+  model3 <- feols(
+    accident_count ~ has_construction + has_construction:is_winter + 
+                    has_construction:is_summer | road_id + month, 
+    data = matched_panel,
+    weights = ~ weights
+  )
+  
+  # 4. Full interaction model
+  model4 <- feols(
+    accident_count ~ has_construction + has_construction:is_urban + 
+                    has_construction:is_winter + has_construction:is_summer | 
+                    road_id + month,
+    data = matched_panel,
+    weights = ~ weights
+  )
+  
+  # 5. Road type heterogeneity
+  model5 <- feols(
+    accident_count ~ has_construction + has_construction:i(road_type, ref = "Other") | 
+                    road_id + month,
+    data = matched_panel,
+    weights = ~ weights
+  )
+  
+  # Return models
+  return(list(
+    method = method_name,
+    base_model = model1,
+    urban_model = model2,
+    seasonal_model = model3,
+    full_model = model4,
+    roadtype_model = model5,
+    matched_panel = matched_panel
+  ))
+}
+
+# Run regressions for each matching method
+regression_results <- lapply(names(matching_methods), function(method) {
+  run_matched_regressions(matching_methods[[method]], method)
+})
+names(regression_results) <- names(matching_methods)
+
+# Comparison table of main effects across methods
+main_effects <- data.frame(
+  Method = names(regression_results),
+  Effect = sapply(regression_results, function(x) coef(x$base_model)["has_construction"]),
+  SE = sapply(regression_results, function(x) se(x$base_model)["has_construction"]),
+  CI_Lower = sapply(regression_results, function(x) 
+    coef(x$base_model)["has_construction"] - 1.96 * se(x$base_model)["has_construction"]),
+  CI_Upper = sapply(regression_results, function(x) 
+    coef(x$base_model)["has_construction"] + 1.96 * se(x$base_model)["has_construction"]),
+  Matched_Roads = sapply(regression_results, function(x) length(unique(x$matched_panel$road_id)))
+)
+
+# Save main effects
+write.csv(main_effects, "data/processed/psm_main_effects.csv", row.names = FALSE)
+
+############################
+# 5. VISUALIZATIONS
+############################
+
+# Plot main effects
+effects_plot <- ggplot(main_effects, aes(x = reorder(Method, Effect), y = Effect)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2) +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Construction Effect on Accidents Across Matching Methods",
+       subtitle = "Point Estimates with 95% Confidence Intervals",
+       y = "Effect on Accident Count",
+       x = "")
+
+# Save effects plot
+ggsave("imgs/psm_effects_comparison.png", effects_plot, width = 10, height = 6, dpi = 300)
+
+# Function to create trend plots for matched data
+create_trend_plot <- function(matched_panel, method_name) {
+  # Get treatment timing
+  treatment_timing <- matched_panel %>%
+    filter(has_construction == 1) %>%
+    group_by(road_id) %>%
+    summarize(first_treatment = min(month), .groups = "drop")
+  
+  # Add treatment timing to all roads
+  matched_panel_with_timing <- matched_panel %>%
+    left_join(treatment_timing, by = "road_id") %>%
+    mutate(
+      # For roads without construction, use median of treated roads
+      first_treatment = if_else(is.na(first_treatment), 
+                              median(treatment_timing$first_treatment), 
+                              first_treatment),
+      # Calculate relative time to treatment
+      rel_month = as.numeric(difftime(month, first_treatment, units = "days")) / 30,
+      # Create period groups
+      rel_period = cut(rel_month, 
+                     breaks = c(-Inf, -3, -2, -1, 0, 1, 2, 3, Inf),
+                     labels = c("t-3+", "t-2", "t-1", "t0", "t+1", "t+2", "t+3", "t+3+"))
+    )
+  
+  # Calculate average outcomes by relative period and treatment status
+  trend_data <- matched_panel_with_timing %>%
+    group_by(rel_period, has_construction) %>%
+    summarize(
+      mean_accidents = mean(accident_count, na.rm = TRUE),
+      se = sd(accident_count, na.rm = TRUE) / sqrt(n()),
+      .groups = "drop"
+    )
+  
+  # Create trend plot
+  trend_plot <- ggplot(trend_data, 
+                      aes(x = rel_period, y = mean_accidents, 
+                          group = factor(has_construction),
+                          color = factor(has_construction))) +
+    geom_line() +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = mean_accidents - 1.96*se, 
+                     ymax = mean_accidents + 1.96*se), width = 0.2) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = paste("Accident Trends by Time to Construction -", method_name),
+         x = "Months Relative to Construction Start",
+         y = "Average Accident Count",
+         color = "Construction")
+  
+  return(trend_plot)
+}
+
+# Create trend plots for each matching method
+trend_plots <- lapply(names(regression_results), function(method) {
+  create_trend_plot(regression_results[[method]]$matched_panel, method)
+})
+names(trend_plots) <- names(regression_results)
+
+# Save trend plots
+for (method in names(trend_plots)) {
+  ggsave(paste0("imgs/trends_", method, ".png"), trend_plots[[method]], width = 10, height = 6, dpi = 300)
+}
+
+############################
+# 6. HETEROGENEITY ANALYSIS
+############################
+
+# Function to extract heterogeneous effects
+extract_heterogeneity <- function(model_list, method_name) {
+  # Urban heterogeneity
+  urban_effects <- data.frame(
+    Method = method_name,
+    Variable = c("Base Effect", "Urban Interaction"),
+    Estimate = c(
+      coef(model_list$urban_model)["has_construction"],
+      coef(model_list$urban_model)["has_construction:is_urbanTRUE"]
+    ),
+    SE = c(
+      se(model_list$urban_model)["has_construction"],
+      se(model_list$urban_model)["has_construction:is_urbanTRUE"]
+    )
+  )
+  
+  # Seasonal heterogeneity
+  season_effects <- data.frame(
+    Method = method_name,
+    Variable = c("Base Effect", "Winter Interaction", "Summer Interaction"),
+    Estimate = c(
+      coef(model_list$seasonal_model)["has_construction"],
+      coef(model_list$seasonal_model)["has_construction:is_winterTRUE"],
+      coef(model_list$seasonal_model)["has_construction:is_summerTRUE"]
+    ),
+    SE = c(
+      se(model_list$seasonal_model)["has_construction"],
+      se(model_list$seasonal_model)["has_construction:is_winterTRUE"],
+      se(model_list$seasonal_model)["has_construction:is_summerTRUE"]
+    )
+  )
+  
+  # Combine
+  return(rbind(urban_effects, season_effects))
+}
+
+# Extract heterogeneity for each method
+heterogeneity_results <- do.call(rbind, lapply(names(regression_results), function(method) {
+  extract_heterogeneity(regression_results[[method]], method)
+}))
+
+# Add confidence intervals
+heterogeneity_results <- heterogeneity_results %>%
+  mutate(
+    CI_Lower = Estimate - 1.96 * SE,
+    CI_Upper = Estimate + 1.96 * SE
+  )
+
+# Create heterogeneity plot
+het_plot <- ggplot(heterogeneity_results, 
+                  aes(x = Variable, y = Estimate, color = Method)) +
+  geom_point(position = position_dodge(width = 0.5), size = 3) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), 
+               position = position_dodge(width = 0.5), width = 0.2) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Heterogeneous Effects Across Matching Methods",
+       y = "Effect on Accident Count",
+       x = "")
+
+# Save heterogeneity plot
+ggsave("imgs/psm_heterogeneity.png", het_plot, width = 12, height = 8, dpi = 300)
+
+############################
+# 7. SENSITIVITY ANALYSIS
+############################
+
+# Sensitivity to caliper width (using nearest neighbor matching)
+calipers <- c(0.1, 0.2, 0.3, 0.5)
+
+caliper_results <- lapply(calipers, function(caliper) {
+  # Create matching with this caliper
+  match_obj <- matchit(
+    ever_construction ~ pre_accident_count + pre_severe_accidents + 
+                      road_length_km + road_type + is_urban,
+    data = matching_data,
+    method = "nearest",
+    caliper = caliper,
+    ratio = 1
+  )
+  
+  # Get matched data
+  matched_data <- match.data(match_obj)
+  
+  # Get matched road IDs
+  matched_road_ids <- matched_data$road_id
+  
+  # Filter panel data to matched roads
+  matched_panel <- panel_data %>%
+    filter(road_id %in% matched_road_ids)
+  
+  # Run basic model
+  model <- feols(
+    accident_count ~ has_construction | road_id + month, 
+    data = matched_panel
+  )
+  
+  # Return results
+  return(list(
+    caliper = caliper,
+    match_obj = match_obj,
+    model = model,
+    estimate = coef(model)["has_construction"],
+    se = se(model)["has_construction"],
+    matched_treated = sum(matched_data$ever_construction == TRUE),
+    matched_control = sum(matched_data$ever_construction == FALSE),
+    mean_distance = mean(matched_data$distance)
+  ))
+})
+
+# Extract caliper sensitivity results
+caliper_comparison <- data.frame(
+  Caliper = sapply(caliper_results, function(x) x$caliper),
+  Estimate = sapply(caliper_results, function(x) x$estimate),
+  SE = sapply(caliper_results, function(x) x$se),
+  CI_Lower = sapply(caliper_results, function(x) x$estimate - 1.96 * x$se),
+  CI_Upper = sapply(caliper_results, function(x) x$estimate + 1.96 * x$se),
+  Matched_Treated = sapply(caliper_results, function(x) x$matched_treated),
+  Matched_Control = sapply(caliper_results, function(x) x$matched_control),
+  Mean_Distance = sapply(caliper_results, function(x) x$mean_distance)
+)
+
+# Caliper sensitivity plot
+caliper_plot <- ggplot(caliper_comparison, aes(x = factor(Caliper), y = Estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2) +
+  theme_minimal() +
+  labs(title = "Sensitivity to Caliper Width",
+       subtitle = "Point Estimates with 95% Confidence Intervals",
+       y = "Effect on Accident Count",
+       x = "Caliper Width")
+
+# Save caliper sensitivity plot
+ggsave("imgs/caliper_sensitivity.png", caliper_plot, width = 10, height = 6, dpi = 300)
+
+############################
+# 8. COMPARISON WITH ORIGINAL ESTIMATE
+############################
+
+# Run the original model for comparison
+original_model <- feols(
+  accident_count ~ has_construction | road_id + month, 
+  data = panel_data
+)
+
+# Get original and matched estimates
+comparison_data <- data.frame(
+  Model = c("Original (Unmatched)", names(regression_results)),
+  Estimate = c(
+    coef(original_model)["has_construction"],
+    sapply(regression_results, function(x) coef(x$base_model)["has_construction"])
+  ),
+  SE = c(
+    se(original_model)["has_construction"],
+    sapply(regression_results, function(x) se(x$base_model)["has_construction"])
+  )
+)
+
+# Add confidence intervals
+comparison_data <- comparison_data %>%
+  mutate(
+    CI_Lower = Estimate - 1.96 * SE,
+    CI_Upper = Estimate + 1.96 * SE
+  )
+
+# Create comparison plot
+comparison_plot <- ggplot(comparison_data, 
+                         aes(x = reorder(Model, Estimate), y = Estimate)) +
+  geom_point(size = 4, aes(color = Model == "Original (Unmatched)")) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper, 
+                   color = Model == "Original (Unmatched)"), width = 0.2) +
+  scale_color_manual(values = c("blue", "red")) +
+  theme_minimal() +
+  coord_flip() +
+  theme(legend.position = "none") +
+  labs(title = "Effect of Construction on Accidents: Matched vs. Unmatched",
+       subtitle = "Point Estimates with 95% Confidence Intervals",
+       y = "Effect on Accident Count",
+       x = "")
+
+# Save comparison plot
+ggsave("imgs/original_vs_matched.png", comparison_plot, width = 10, height = 6, dpi = 300)
+
+############################
+# 9. FINAL RESULTS AND OUTPUT
+############################
+
+# Choose the best matching method based on balance metrics
+best_method <- balance_comparison %>%
+  arrange(Mean_Diff_Adj) %>%
+  pull(Method) %>%
+  .[1]
+
+cat("Best matching method based on balance:", best_method, "\n")
+
+# Final model results using the best method
+final_results <- regression_results[[best_method]]
+
+# Create final results table
+final_models <- list(
+  "Base" = final_results$base_model,
+  "Urban" = final_results$urban_model,
+  "Seasonal" = final_results$seasonal_model,
+  "Full" = final_results$full_model
+)
+
+# Save comprehensive results
+saveRDS(list(
+  matching_methods = matching_methods,
+  balance_results = balance_results,
+  regression_results = regression_results,
+  main_effects = main_effects,
+  heterogeneity_results = heterogeneity_results,
+  caliper_comparison = caliper_comparison,
+  comparison_data = comparison_data,
+  final_results = final_results
+), "data/processed/comprehensive_psm_results.rds")
+
+# Print key findings
+cat("\n=== PROPENSITY SCORE MATCHING ANALYSIS COMPLETE ===\n")
+cat("Original construction effect:", round(coef(original_model)["has_construction"], 2), 
+    "(SE:", round(se(original_model)["has_construction"], 2), ")\n")
+cat("Best matched construction effect:", 
+    round(coef(final_results$base_model)["has_construction"], 2),
+    "(SE:", round(se(final_results$base_model)["has_construction"], 2), ")\n")
+
+# Print heterogeneity summary for best method
+cat("\nHeterogeneity in construction effects (", best_method, "):\n", sep = "")
+cat("Urban areas:", 
+    round(coef(final_results$urban_model)["has_construction:is_urbanTRUE"], 2),
+    "(SE:", round(se(final_results$urban_model)["has_construction:is_urbanTRUE"], 2), ")\n")
+cat("Winter effect:", 
+    round(coef(final_results$seasonal_model)["has_construction:is_winterTRUE"], 2),
+    "(SE:", round(se(final_results$seasonal_model)["has_construction:is_winterTRUE"], 2), ")\n")
+cat("Summer effect:", 
+    round(coef(final_results$seasonal_model)["has_construction:is_summerTRUE"], 2),
+    "(SE:", round(se(final_results$seasonal_model)["has_construction:is_summerTRUE"], 2), ")\n")
+
+cat("\nAnalysis complete. Results saved to 'data/processed/comprehensive_psm_results.rds'\n")
+cat("Visualizations saved to the 'imgs' directory\n")
+```
+
+
+

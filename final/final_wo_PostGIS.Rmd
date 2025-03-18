@@ -688,3 +688,384 @@ ggplot(severity_comparison, aes(x = Severity, y = count, fill = location)) +
        y = "Count",
        fill = "Location")
 ```
+
+## Regressions
+
+### 1. Panel Data Set
+
+First, we set-up a panel data set for our regressions.
+```{r}
+# Create road segment panel
+# Step 1: Define time periods (monthly for 2021)
+time_periods <- seq(from = as.Date("2021-01-01"), 
+                    to = as.Date("2021-12-01"), 
+                    by = "month")
+
+# Step 2: Create road segments (either use existing or create grid cells)
+# Option A: Use existing road segments from ca_roads
+road_segments <- ca_roads %>%
+  mutate(segment_id = row_number()) %>%
+  select(segment_id, LINEARID, FULLNAME, geometry)
+
+# Step 3: Generate panel by creating all combinations of segments and time periods
+panel_data <- expand.grid(
+  segment_id = road_segments$segment_id,
+  month = time_periods
+) %>%
+  as_tibble()
+
+# Step 4: Join spatial information
+panel_data <- panel_data %>%
+  left_join(road_segments %>% st_set_geometry(NULL) %>% select(segment_id), 
+            by = "segment_id")
+```
+
+### 2. Treatment variables
+
+We identify which segments had construction during which periods:
+```{r}
+# Identify construction treatment status for each segment-month
+construction_panel <- df.const.sf %>%
+  st_transform(st_crs(road_segments)) %>%
+  # Create month variable
+  mutate(month = floor_date(Start_Time, "month")) %>%
+  # Spatial join with road segments
+  st_join(road_segments) %>%
+  # Group by segment and month
+  group_by(segment_id, month) %>%
+  # Create treatment indicator
+  summarize(
+    has_construction = 1,
+    construction_count = n(),
+    .groups = "drop"
+  ) %>%
+  st_set_geometry(NULL)
+
+# Join treatment to panel
+panel_data <- panel_data %>%
+  left_join(construction_panel, by = c("segment_id", "month")) %>%
+  mutate(has_construction = ifelse(is.na(has_construction), 0, 1))
+```
+
+### 3. Outcome variables
+
+We count accidents by segment and time period:
+
+```{r}
+# Count accidents by segment and month
+accident_counts <- df.acc.sf %>%
+  st_transform(st_crs(road_segments)) %>%
+  # Create month variable
+  mutate(month = floor_date(Start_Time, "month")) %>%
+  # Spatial join with road segments 
+  st_join(road_segments) %>%
+  # Group by segment and month
+  group_by(segment_id, month) %>%
+  # Count accidents and summarize severity
+  summarize(
+    accident_count = n(),
+    severe_accident_count = sum(Severity >= 3, na.rm = TRUE),
+    avg_severity = mean(Severity, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  st_set_geometry(NULL)
+
+# Join accidents to panel
+panel_data <- panel_data %>%
+  left_join(accident_counts, by = c("segment_id", "month")) %>%
+  mutate(
+    accident_count = replace_na(accident_count, 0),
+    severe_accident_count = replace_na(severe_accident_count, 0),
+    avg_severity = replace_na(avg_severity, 0)
+  )
+```
+
+
+### 4. Feature Engineering
+
+We add several control variables:
+
+```{r}
+# 1. Add urban/rural classification (crucial for your research question)
+# Get Census urban areas
+urban_areas <- urban_areas(year = 2021)
+
+# Identify if road segments are in urban areas
+road_segments_urban <- road_segments %>%
+  st_transform(st_crs(urban_areas)) %>%
+  st_join(urban_areas %>% select(UACE, NAME, UATYP), join = st_intersects) %>%
+  mutate(
+    is_urban = !is.na(UACE),
+    urban_type = ifelse(is.na(UATYP), "Rural", UATYP),
+    urban_name = NAME
+  ) %>%
+  select(segment_id, is_urban, urban_type, urban_name)
+
+# Join urban classification to panel
+panel_data <- panel_data %>%
+  left_join(road_segments_urban %>% st_set_geometry(NULL) %>% 
+              select(segment_id, is_urban, urban_type), 
+            by = "segment_id")
+
+# 2. Add segment characteristics from road data
+segment_chars <- road_segments %>%
+  mutate(
+    road_type = case_when(
+      grepl("Interstate", RTTYP) ~ "Interstate",
+      grepl("U.S. Highway", RTTYP) ~ "US Highway",
+      grepl("State Highway", RTTYP) ~ "State Highway",
+      TRUE ~ "Other"
+    ),
+    segment_length_km = as.numeric(st_length(geometry))/1000
+  ) %>%
+  select(segment_id, road_type, segment_length_km) %>%
+  st_set_geometry(NULL)
+
+# Join segment characteristics
+panel_data <- panel_data %>%
+  left_join(segment_chars, by = "segment_id")
+
+# 3. Add time-based features
+panel_data <- panel_data %>%
+  mutate(
+    year = year(month),
+    month_num = month(month),
+    quarter = quarter(month),
+    is_holiday_month = month_num %in% c(7, 11, 12),  # July, Nov, Dec
+    is_winter = month_num %in% c(12, 1, 2),
+    is_summer = month_num %in% c(6, 7, 8)
+  )
+
+# 4. Normalize accident counts by segment length
+panel_data <- panel_data %>%
+  mutate(
+    accidents_per_km = accident_count / segment_length_km,
+    severe_accidents_per_km = severe_accident_count / segment_length_km
+  )
+```
+
+
+And finally we also add the weather data from the initial accidents
+
+```{r}
+# Extract weather data from accidents dataset
+weather_by_segment_month <- df.acc.sf %>%
+  st_transform(st_crs(road_segments)) %>%
+  mutate(month = floor_date(Start_Time, "month")) %>%
+  st_join(road_segments) %>%
+  group_by(segment_id, month) %>%
+  summarize(
+    avg_temperature = mean(Temperature, na.rm = TRUE),
+    avg_precipitation = mean(Precipitation, na.rm = TRUE),
+    pct_adverse_weather = mean(Weather_Condition %in% 
+                              c("Rain", "Snow", "Fog", "Thunderstorm"), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  st_set_geometry(NULL)
+
+# Join weather data
+panel_data <- panel_data %>%
+  left_join(weather_by_segment_month, by = c("segment_id", "month"))
+```
+
+
+### 5. Regression time
+
+
+Now we can run the regression models based on our DiD design
+
+```{r}
+library(fixest) # For efficient fixed effects estimation
+
+# 1. Base DiD Model
+model1 <- feols(
+  accident_count ~ has_construction | segment_id + month, 
+  data = panel_data
+)
+
+# 2. Extended Model with Urban/Rural Heterogeneity
+model2 <- feols(
+  accident_count ~ has_construction + has_construction:is_urban | segment_id + month, 
+  data = panel_data
+)
+
+# 3. Full Model with additional controls
+model3 <- feols(
+  accident_count ~ has_construction + has_construction:is_urban + 
+                  has_construction:is_winter + has_construction:is_summer +
+                  avg_temperature + avg_precipitation + pct_adverse_weather | 
+                  segment_id + month,
+  data = panel_data
+)
+
+# 4. Accident rate model (normalized by segment length)
+model4 <- feols(
+  accidents_per_km ~ has_construction + has_construction:is_urban | segment_id + month, 
+  data = panel_data
+)
+
+# 5. Severity model
+model5 <- feols(
+  avg_severity ~ has_construction + has_construction:is_urban | segment_id + month, 
+  data = panel_data
+)
+
+# Display results in a regression table
+library(modelsummary)
+modelsummary(list(model1, model2, model3, model4, model5),
+             stars = TRUE,
+             title = "DiD Estimates of Construction Impacts on Accidents")
+```
+
+### 6. Robustness Checks
+
+We can also run some robustness checks to test the sensitivity of our results
+
+```{r}
+### 6. Robustness Checks
+
+# 1. EVENT STUDY APPROACH - Analyze dynamic effects
+# Create relative time variables to construction start
+panel_data_event <- panel_data %>%
+  group_by(segment_id) %>%
+  # Find first month with construction for each segment
+  mutate(
+    first_construction = if(any(has_construction == 1)) min(month[has_construction == 1]) else NA,
+    # Calculate months relative to construction start
+    rel_month = as.numeric(difftime(month, first_construction, units = "days")) / 30,
+    # Create factor for event study
+    rel_period = case_when(
+      is.na(rel_month) ~ NA_character_,
+      rel_month <= -3 ~ "t-3+",
+      rel_month <= -2 ~ "t-2",
+      rel_month <= -1 ~ "t-1",
+      rel_month < 0 ~ "t-0",
+      rel_month < 1 ~ "t+0",
+      rel_month < 2 ~ "t+1",
+      rel_month < 3 ~ "t+2",
+      TRUE ~ "t+3+"
+    )
+  ) %>%
+  ungroup() %>%
+  # Create dummy variables for each relative period
+  mutate(
+    rel_period = factor(rel_period, 
+                        levels = c("t-3+", "t-2", "t-1", "t-0", "t+0", "t+1", "t+2", "t+3+"))
+  )
+
+# Run event study regression
+event_model <- feols(
+  accident_count ~ i(rel_period, ref = "t-1") | segment_id + month, 
+  data = panel_data_event %>% filter(!is.na(rel_period))
+)
+
+# Visualize event study results
+coef_plot <- iplot(event_model, main = "Event Study: Effect of Construction on Accidents",
+      xlab = "Months Relative to Construction Start", ylab = "Effect on Accident Count")
+
+# 2. PLACEBO TESTS - Randomly assign treatment
+set.seed(123)
+placebo_data <- panel_data %>%
+  # Randomly shuffle the has_construction variable
+  mutate(placebo_construction = sample(has_construction))
+
+# Run placebo model
+placebo_model <- feols(
+  accident_count ~ placebo_construction | segment_id + month, 
+  data = placebo_data
+)
+
+# Run multiple placebo tests
+placebo_results <- data.frame(iteration = 1:100, estimate = NA, std.error = NA)
+for(i in 1:100) {
+  set.seed(i)
+  # Create new placebo treatment
+  temp_data <- panel_data %>%
+    mutate(placebo_construction = sample(has_construction))
+  
+  # Run model
+  temp_model <- feols(
+    accident_count ~ placebo_construction | segment_id + month, 
+    data = temp_data
+  )
+  
+  # Store results
+  placebo_results$estimate[i] <- coef(temp_model)[1]
+  placebo_results$std.error[i] <- se(temp_model)[1]
+}
+
+# Plot placebo distribution vs. actual effect
+placebo_plot <- ggplot(placebo_results, aes(x = estimate)) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  geom_vline(xintercept = coef(model1)[1], color = "red", linewidth = 1.5) +
+  theme_minimal() +
+  labs(title = "Distribution of Placebo Effects vs. Actual Effect",
+       x = "Estimated Effect", y = "Count",
+       caption = "Red line shows actual estimated effect")
+
+# 3. BUFFER DISTANCE SENSITIVITY - Test different buffer definitions
+# This requires going back to your spatial join code and creating different versions
+# Here's a simplified approach (assuming you can regenerate panel data with different buffers)
+buffer_results <- data.frame(
+  buffer_dist = c(200, 300, 400, 500),
+  estimate = c(0.12, 0.15, 0.11, 0.09),  # Example values - replace with actual results
+  lower_ci = c(0.05, 0.08, 0.04, 0.01),  # from running your models with different buffer distances
+  upper_ci = c(0.19, 0.22, 0.18, 0.17)
+)
+
+# Plot buffer sensitivity results
+buffer_plot <- ggplot(buffer_results, aes(x = factor(buffer_dist), y = estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2) +
+  theme_minimal() +
+  labs(title = "Sensitivity to Buffer Distance",
+       x = "Buffer Distance (meters)", y = "Estimated Effect on Accident Count")
+
+# 4. ALTERNATIVE FIXED EFFECTS - Test different specifications
+alt_fe_model1 <- feols(accident_count ~ has_construction, data = panel_data)  # No FE
+alt_fe_model2 <- feols(accident_count ~ has_construction | segment_id, data = panel_data) # Only segment FE
+alt_fe_model3 <- feols(accident_count ~ has_construction | month, data = panel_data) # Only time FE
+alt_fe_model4 <- feols(accident_count ~ has_construction | segment_id + month, data = panel_data) # Both FE (baseline)
+
+# Compare models
+fe_comparison <- modelsummary(list("No FE" = alt_fe_model1, 
+                                  "Segment FE" = alt_fe_model2,
+                                  "Time FE" = alt_fe_model3,
+                                  "Both FE" = alt_fe_model4),
+                            stars = TRUE)
+
+# 5. DIFFERENT OUTCOME TRANSFORMATIONS - Test sensitivity to functional form
+transform_model1 <- feols(accident_count ~ has_construction | segment_id + month, 
+                       data = panel_data) # Linear (baseline)
+transform_model2 <- feols(log(accident_count + 1) ~ has_construction | segment_id + month, 
+                       data = panel_data) # Log transform
+transform_model3 <- fepois(accident_count ~ has_construction | segment_id + month, 
+                       data = panel_data) # Poisson
+
+# Compare transformations
+transform_comparison <- modelsummary(list("Linear" = transform_model1,
+                                        "Log" = transform_model2,
+                                        "Poisson" = transform_model3),
+                                   stars = TRUE)
+
+# 6. Combine robustness visualizations into a panel
+library(patchwork)
+robustness_panel <- (coef_plot / placebo_plot) | (buffer_plot / fe_comparison)
+robustness_panel + plot_annotation(
+  title = "Robustness Checks for Construction Safety Analysis",
+  theme = theme(plot.title = element_text(size = 16, hjust = 0.5))
+)
+```
+
+Additional validation, propensity score matching:
+
+```{r}
+library(MatchIt)
+matched_segments <- matchit(
+  has_construction ~ road_type + segment_length_km + is_urban,
+  data = panel_data %>% filter(month == min(month)),
+  method = "nearest"
+)
+```
+
+
