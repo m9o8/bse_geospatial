@@ -6,12 +6,12 @@ author:
 - Simon Vellin
 subtitle: Analysis of US road accidents and construction sites
 output:
-  html_notebook:
-    df_print: paged
-    toc: true
   html_document:
     toc: true
     df_print: paged
+  html_notebook:
+    df_print: paged
+    toc: true
 ---
 
 <hr>
