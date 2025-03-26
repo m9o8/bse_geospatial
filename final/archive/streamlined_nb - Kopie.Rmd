@@ -1,0 +1,131 @@
+---
+title: "Geospatial Data Science - Final project"
+author:
+- Moritz Peist
+- Noemi Lucchi
+- Simon Vellin
+subtitle: Analysis of US road accidents and construction sites
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    df_print: paged
+    toc: true
+---
+
+<hr>
+
+```{css, echo=FALSE}
+h1.title {
+  text-align: center;
+}
+
+h4.author, h4.date {
+  text-align: center;
+}
+
+.author {
+  text-align: center;
+}
+
+.date {
+  text-align: center;
+}
+
+/* Add styling for subtitle */
+h3.subtitle {
+  text-align: center;
+  font-style: italic;
+  margin-top: -10px;
+  color: #606060;
+}
+```
+
+
+
+```{r}
+library(data.table)   # For faster data manipulation
+library(tidyverse)    # For data manipulation and visualization
+library(sf)           # For spatial data handling
+library(leaflet)      # For interactive maps
+library(leaflet.extras) # For additional leaflet features
+library(mapview)      # For easier map visualization
+library(tmap)         # For thematic maps
+library(tigris)       # For US road networks
+library(future)       # For parallel processing
+library(future.apply) # For parallel processing with apply functions
+library(sf)           # For spatial data handling
+library(RPostgres)    # For PostgreSQL connection
+library(DBI)          # For database interface
+
+# Create directories if they don't exist
+if (!dir.exists("./data/tigris")) {
+  dir.create("./data/tigris", recursive = TRUE)
+}
+
+# Set custom cache directory (optional)
+options(tigris_cache_dir = "./data/tigris")
+# Configure tigris to use caching
+options(tigris_use_cache = TRUE)
+
+# Load Caltrans State Highway Network
+aadt <- st_read("data/Traffic_Volumes_AADT/Traffic_Volumes_AADT.shp", crs = 3310)
+```
+
+
+```{r}
+# Load accidents
+
+# Efficient approach
+df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
+  # Filter date range of 2021
+  lubridate::year(as.Date(Start_Time)) == 2021 & 
+  # And California
+  State == "CA"
+][, `:=`(
+  # Add year, quarter, month columns
+  year = data.table::year(Start_Time),
+  quarter = data.table::quarter(Start_Time),
+  month = data.table::month(Start_Time),
+  # Calculate duration (assuming End_Time exists in the dataset)
+  duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+)] %>% 
+  as_tibble()  # Convert to tibble only at the end for performance
+```
+
+
+```{r}
+df.const <- fread("data/us_constructions/US_constructions_Dec21.csv")[
+  # Filter date range of 2021
+  lubridate::year(as.Date(Start_Time)) == 2021 & 
+  # And California
+  State == "CA"
+][, `:=`(
+  # Add year, quarter, month columns
+  year = year(Start_Time),
+  quarter = quarter(Start_Time),
+  month = month(Start_Time),
+  # Calculate duration (assuming End_Time exists in the dataset)
+  duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+)] %>% 
+  as_tibble()  # Convert to tibble only at the end for performance
+```
+
+```{r Geospatial Data}
+# Convert accident data to sf object
+df.acc.sf <- df.acc %>%
+  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+  st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 3310)
+
+# Convert construction data to sf object
+df.const.sf <- df.const %>%
+  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+  st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 3310)
+```
+
+
+
+
+
+

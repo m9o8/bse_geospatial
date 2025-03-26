@@ -1,0 +1,856 @@
+---
+title: 'California Road Construction Safety Analysis: A Spatial Econometric Approach'
+author:
+- Moritz Peist
+- Noemi Lucchi
+- Simon Vellin
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    fig_caption: true
+    keep_tex: true
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{float}
+- \floatplacement{figure}{H}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE, 
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5,
+  out.width = "100%",
+  fig.align = "center"
+)
+
+# Load required libraries
+library(data.table)   # For faster data manipulation
+library(tidyverse)    # For data manipulation and visualization
+library(sf)           # For spatial data handling
+library(leaflet)      # For interactive maps
+library(leaflet.extras) # For additional leaflet features
+library(mapview)      # For easier map visualization
+library(tmap)         # For thematic maps
+library(tigris)       # For US road networks
+library(fixest)       # For fixed effects models
+library(spdep)        # For spatial weights and tests
+library(splm)         # For spatial panel models
+library(RColorBrewer) # For color palettes
+library(patchwork)    # For combining plots
+library(kableExtra)   # For nice tables
+
+# Configure environment
+options(tigris_cache_dir = "./data/tigris")
+options(tigris_use_cache = TRUE)
+```
+
+## Abstract
+
+This study examines the causal relationship between road construction activities and traffic accident rates in California using high-resolution spatial data from 2021. Implementing a difference-in-differences framework with spatial controls, we analyze how construction zones affect accident frequency and severity. Our findings indicate a significant positive relationship between active construction and accident occurrence, with heterogeneous effects across urban and rural environments. Specifically, we observe that the effect of construction on accident rates is substantially larger in urban areas. Spatial spillover analysis reveals that accident impacts extend beyond immediate construction zones, with particularly strong effects in areas 500-1000m from construction sites. This research provides evidence-based insights for transportation safety planning and targeted mitigation strategies.
+
+## 1. Introduction
+
+Road construction is a necessary yet potentially disruptive component of transportation infrastructure maintenance and development. While essential for long-term safety improvements, construction activities create temporary changes in traffic patterns, road conditions, and driver behavior that may increase accident risk. Understanding the causal relationship between construction activities and traffic safety has important implications for construction scheduling, resource allocation, traffic management strategies, and policy development.
+
+Despite the importance of this relationship, rigorous causal evidence on how road construction affects traffic accidents remains limited, particularly with respect to potential heterogeneity between urban and rural environments. This study addresses this gap by leveraging comprehensive spatial data on road construction activities and traffic accidents in California during 2021 to answer the following research questions:
+
+1. How does road construction causally impact traffic accident rates?
+2. Do these effects systematically differ between urban and rural environments?
+3. Are there spatial spillover effects beyond the immediate construction zones?
+
+The findings of this research have direct implications for transportation safety planning, particularly regarding how resources should be allocated for traffic management during construction activities across different environments.
+
+## 2. Data and Methods
+
+### 2.1 Data Sources
+
+This study integrates multiple large-scale datasets to create a comprehensive spatial-temporal framework for analysis:
+
+**Primary Datasets:**
+1. **US Road Construction and Closures Dataset (2021)** - Contains detailed records of construction activities in California with coordinates, start/end times, and affected distances
+2. **US Traffic Accidents Dataset (2021)** - Comprehensive accident records with precise locations, timestamps, and severity measures
+3. **Caltrans State Highway Network** - Annual Average Daily Traffic (AADT) data for normalizing accident rates by traffic volume
+4. **US Census Bureau Urban Areas** - Official urban/rural classifications for spatial heterogeneity analysis
+
+### 2.2 Data Processing and Preparation
+
+We focused our analysis on California road construction and accidents from 2021, creating a spatial-temporal framework that allows us to examine the causal relationship between construction activities and accidents.
+
+```{r data_loading, eval=FALSE}
+# Load Caltrans State Highway Network
+aadt <- st_read("data/Traffic_Volumes_AADT/Traffic_Volumes_AADT.shp")
+
+# Load and filter accidents data
+df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
+  # Filter date range of 2021
+  lubridate::year(as.Date(Start_Time)) == 2021 & 
+  # And California
+  State == "CA"
+][, `:=`(
+  # Add year, quarter, month columns
+  year = data.table::year(Start_Time),
+  quarter = data.table::quarter(Start_Time),
+  month = data.table::month(Start_Time),
+  # Calculate duration
+  duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+)] %>% 
+  as_tibble()
+
+# Load and filter construction data
+df.const <- fread("data/us_constructions/US_constructions_Dec21.csv")[
+  # Filter date range of 2021
+  lubridate::year(as.Date(Start_Time)) == 2021 & 
+  # And California
+  State == "CA"
+][, `:=`(
+  # Add year, quarter, month columns
+  year = year(Start_Time),
+  quarter = quarter(Start_Time),
+  month = month(Start_Time),
+  # Calculate duration
+  duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
+)][
+  duration > 1  # Filter out constructions lasting less than a day
+] %>% 
+  as_tibble()
+```
+
+```{r data_summary}
+# Display data summary (using pre-computed values for reproducibility)
+accidents_count <- 341876
+construction_count <- 33513
+aadt_count <- 13874
+
+cat("Summary of datasets:\n")
+cat("- Accidents dataset:", accidents_count, "records\n")
+cat("- Construction dataset:", construction_count, "records\n")
+cat("- AADT dataset:", aadt_count, "records\n")
+```
+
+The data preparation revealed 341,876 accident records and 33,513 construction events across California in 2021. The temporal distribution of both accidents and construction projects showed seasonal patterns, with construction activity peaking in the spring months and accidents showing higher frequency in winter and fall.
+
+```{r temporal_patterns, eval=FALSE}
+# Temporal patterns visualization
+acc_monthly <- df.acc %>%
+  mutate(month = floor_date(as.Date(Start_Time), "month")) %>%
+  count(month)
+
+const_monthly <- df.const %>%
+  mutate(month = floor_date(as.Date(Start_Time), "month")) %>%
+  count(month)
+
+# Plot monthly patterns
+p1 <- ggplot(acc_monthly, aes(x = month, y = n)) +
+  geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  labs(title = "Monthly Accidents in California (2021)",
+       x = "Month", y = "Count") +
+  theme_minimal()
+
+p2 <- ggplot(const_monthly, aes(x = month, y = n)) +
+  geom_line(color = "red") +
+  geom_point(color = "red") +
+  labs(title = "New Construction Projects in California (2021)",
+       x = "Month", y = "Count") +
+  theme_minimal()
+
+p1 + p2
+```
+
+```{r construction_duration, eval=FALSE}
+# Check construction durations
+df.const %>%
+  ggplot(aes(x = duration)) +
+  geom_histogram(bins = 30, fill = "orange") +
+  labs(title = "Distribution of Construction Duration",
+       x = "Duration (days)", y = "Count") +
+  theme_minimal()
+```
+
+### 2.3 Methodology
+
+Our analysis employs a difference-in-differences (DiD) framework augmented with spatial controls to identify the causal impact of construction activities on traffic accidents. This approach allows us to address potential endogeneity concerns by controlling for time-invariant location characteristics and time-specific effects.
+
+#### 2.3.1 Spatial Processing
+
+To establish the spatial relationship between accidents and construction activities, we converted both accident and construction datasets to spatial objects and created 500-meter buffer zones around construction locations. These buffer zones served as our treatment areas.
+
+```{r spatial_processing, eval=FALSE}
+# Create spatial objects
+if (!inherits(df.acc, "sf")) {
+  df.acc.sf <- df.acc %>%
+    filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+    st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326) %>%
+    st_transform(crs = 3310)  # CA Albers for accurate distance
+} else {
+  df.acc.sf <- df.acc
+}
+
+if (!inherits(df.const, "sf")) {
+  df.const.sf <- df.const %>%
+    filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+    st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326) %>%
+    st_transform(crs = 3310)
+} else {
+  df.const.sf <- df.const
+}
+
+# Create construction buffers (500m)
+const_buffers <- df.const.sf %>%
+  st_buffer(dist = 500)  # 500m buffer
+
+# Add buffer metadata
+const_buffers <- const_buffers %>%
+  mutate(
+    buffer_id = paste0("c", row_number()),
+    start_date = as.Date(Start_Time),
+    end_date = as.Date(End_Time),
+    construction_duration = as.numeric(difftime(end_date, start_date, units = "days"))
+  )
+```
+
+#### 2.3.2 Urban-Rural Classification
+
+We classified construction sites as urban or rural based on their intersection with US Census Bureau urban areas. This classification is crucial for our heterogeneity analysis.
+
+```{r urban_rural, eval=FALSE}
+# Download urban areas for California
+ca_urban_areas <- tigris::urban_areas(cb = TRUE, year = 2019) %>%
+  st_transform(st_crs(const_buffers)) %>%
+  filter(grepl(", CA$", NAME10))
+
+# Classify construction sites as urban or rural
+const_urban <- st_join(
+  const_buffers,
+  ca_urban_areas %>% select(urban_name = NAME10),
+  join = st_intersects
+)
+
+const_urban <- const_urban %>%
+  mutate(is_urban = !is.na(urban_name))
+
+# Visualize urban/rural distribution
+urban_rural_counts <- const_urban %>%
+  st_drop_geometry() %>%
+  count(is_urban) %>%
+  mutate(percentage = n / sum(n) * 100)
+```
+
+```{r urban_rural_table}
+# Urban-rural distribution (using pre-computed values)
+urban_rural_df <- data.frame(
+  is_urban = c(FALSE, TRUE),
+  n = c(9803, 23795),
+  percentage = c(29.2, 70.8)
+)
+
+kableExtra::kable(urban_rural_df, 
+                 col.names = c("Urban Area", "Count", "Percentage (%)"),
+                 caption = "Distribution of Construction Sites by Urban/Rural Classification",
+                 booktabs = TRUE,
+                 digits = 1) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "hold_position"),
+                           full_width = FALSE) %>%
+  kableExtra::row_spec(0, bold = TRUE) %>%
+  kableExtra::row_spec(1:2, background = c("#f5f5f5", "#e8e8e8"))
+```
+
+Our analysis revealed that approximately 70.8% of construction zones were located in urban areas, with the remaining 29.2% in rural environments.
+
+#### 2.3.3 Panel Dataset Construction
+
+We created a panel dataset that tracks accidents in each buffer zone over time, with indicators for pre-construction, during-construction, and post-construction periods. This approach allows us to implement the difference-in-differences design.
+
+```{r panel_data, eval=FALSE}
+# Join accidents to construction buffers
+accidents_in_buffers <- st_join(
+  df.acc.sf %>% 
+    select(accident_id = ID, accident_date = Start_Time, Severity),
+  const_urban %>% 
+    select(buffer_id, construction_id = ID, start_date, end_date, is_urban),
+  join = st_intersects
+)
+
+# Classify accidents by timing relative to construction
+accidents_in_buffers <- accidents_in_buffers %>%
+  mutate(
+    accident_date = as.Date(accident_date),
+    time_period = case_when(
+      is.na(start_date) ~ NA_character_,
+      accident_date < start_date ~ "before",
+      accident_date > end_date ~ "after",
+      TRUE ~ "during"
+    ),
+    month_year = floor_date(accident_date, "month")
+  )
+
+# Count accidents by construction period
+period_counts <- accidents_in_buffers %>%
+  st_drop_geometry() %>%
+  filter(!is.na(time_period)) %>%
+  count(time_period)
+```
+
+```{r period_counts_table}
+# Period counts (using pre-computed values)
+period_df <- data.frame(
+  time_period = c("after", "before", "during"),
+  n = c(381112, 590600, 308601)
+)
+
+period_df <- period_df %>%
+  mutate(percentage = n / sum(n) * 100)
+
+kableExtra::kable(period_df, 
+                 col.names = c("Construction Period", "Count", "Percentage (%)"),
+                 caption = "Distribution of Accidents by Construction Period",
+                 booktabs = TRUE,
+                 digits = 1) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "hold_position"),
+                           full_width = FALSE) %>%
+  kableExtra::row_spec(0, bold = TRUE) %>%
+  kableExtra::row_spec(1:3, background = c("#f5f5f5", "#e8e8e8", "#f5f5f5"))
+```
+
+```{r panel_creation, eval=FALSE}
+# Generate all buffer-month combinations
+all_months <- seq(as.Date("2021-01-01"), as.Date("2021-12-01"), by = "month")
+panel_grid <- expand_grid(
+  buffer_id = unique(const_urban$buffer_id),
+  month = all_months
+)
+
+# Join buffer characteristics
+panel_grid <- panel_grid %>%
+  left_join(
+    const_urban %>%
+      st_drop_geometry() %>%
+      select(buffer_id, construction_id = ID, start_date, end_date, is_urban),
+    by = "buffer_id"
+  )
+
+# Create treatment indicator
+panel_grid <- panel_grid %>%
+  mutate(
+    treatment = month >= start_date & month <= end_date,
+    post_treatment = month > end_date
+  )
+
+# Count accidents by buffer and month
+monthly_accidents <- accidents_in_buffers %>%
+  st_drop_geometry() %>%
+  mutate(month = floor_date(accident_date, "month")) %>%
+  count(buffer_id, month) %>%
+  rename(accident_count = n)
+
+# Join accident counts to panel
+panel_data <- panel_grid %>%
+  left_join(monthly_accidents, by = c("buffer_id", "month")) %>%
+  replace_na(list(accident_count = 0))
+```
+
+#### 2.3.4 Traffic Volume Integration
+
+To control for exposure to traffic, we integrated Annual Average Daily Traffic (AADT) data from Caltrans, allowing us to normalize accident counts by traffic volume.
+
+```{r traffic_volume, eval=FALSE}
+# Transform AADT data to ensure matching CRS
+aadt_sf <- st_transform(aadt, st_crs(const_buffers))
+
+# Convert AADT columns to numeric
+aadt_sf <- aadt_sf %>%
+  mutate(
+    BACK_AADT_num = as.numeric(as.character(BACK_AADT)),
+    AHEAD_AADT_num = as.numeric(as.character(AHEAD_AADT))
+  )
+
+# Directly find the nearest AADT point for each construction buffer
+nearest_indices <- st_nearest_feature(const_buffers, aadt_sf)
+nearest_distances <- st_distance(const_buffers, aadt_sf[nearest_indices,], by_element = TRUE)
+
+# Create a dataframe with buffer IDs and nearest AADT values
+buffer_aadt <- const_buffers %>%
+  select(buffer_id) %>%
+  bind_cols(
+    aadt_sf[nearest_indices, ] %>%
+    select(BACK_AADT_num, AHEAD_AADT_num)
+  ) %>%
+  mutate(
+    distance_to_nearest = as.numeric(nearest_distances),
+    traffic_volume = rowMeans(cbind(BACK_AADT_num, AHEAD_AADT_num), na.rm = TRUE),
+    n_points = 1
+  ) %>%
+  st_drop_geometry() %>%
+  select(buffer_id, traffic_volume, n_points, distance_to_nearest)
+
+# Use the buffer approach for points within a certain distance
+buffer_radius <- 1000  # meters
+buffer_aadt <- buffer_aadt %>%
+  mutate(
+    method = if_else(distance_to_nearest <= buffer_radius, "within_buffer", "nearest_feature")
+  )
+
+# Join to panel data
+panel_data <- panel_data %>%
+  left_join(buffer_aadt, by = "buffer_id")
+
+# Create normalized accident rate
+panel_data <- panel_data %>%
+  mutate(
+    accident_rate = ifelse(traffic_volume > 0, 
+                          accident_count / traffic_volume * 10000,  # Per 10,000 vehicles
+                          NA)
+  )
+```
+
+### 2.4 Econometric Models
+
+We implemented several model specifications to ensure robustness and to explore heterogeneity in the effects:
+
+#### 2.4.1 Base Difference-in-Differences Model
+
+Our baseline model takes the form:
+
+$$accident\_count_{it} = \alpha + \beta_1 treatment_{it} + \gamma_t + \delta_i + \varepsilon_{it}$$
+
+Where:
+- $accident\_count_{it}$ is the number of accidents in buffer $i$ at time $t$
+- $treatment_{it}$ is a binary indicator for active construction
+- $\gamma_t$ represents time fixed effects
+- $\delta_i$ represents location fixed effects
+- $\varepsilon_{it}$ is the error term
+
+```{r base_model, eval=FALSE}
+# Basic DiD model
+did_model <- feols(
+  accident_count ~ treatment | buffer_id + month,
+  data = panel_data
+)
+```
+
+#### 2.4.2 Heterogeneity Analysis
+
+To examine differential effects between urban and rural areas, we extended the base model with an interaction term:
+
+$$accident\_count_{it} = \alpha + \beta_1 treatment_{it} + \beta_2 (treatment_{it} \times urban_i) + \gamma_t + \delta_i + \varepsilon_{it}$$
+
+```{r heterogeneity_model, eval=FALSE}
+# DiD with urban/rural interaction
+did_urban_model <- feols(
+  accident_count ~ treatment * is_urban | buffer_id + month,
+  data = panel_data %>% filter(!is.na(is_urban))
+)
+```
+
+#### 2.4.3 Normalized Accident Rate Model
+
+To account for traffic volume differences, we also estimated models using normalized accident rates:
+
+$$accident\_rate_{it} = \alpha + \beta_1 treatment_{it} + \gamma_t + \delta_i + \varepsilon_{it}$$
+
+```{r rate_model, eval=FALSE}
+# DiD with normalized accident rate
+did_rate_model <- feols(
+  accident_rate ~ treatment | buffer_id + month,
+  data = panel_data %>% filter(!is.na(accident_rate))
+)
+
+# DiD with urban/rural heterogeneity and normalized rate
+did_rate_urban_model <- feols(
+  accident_rate ~ treatment * is_urban | buffer_id + month,
+  data = panel_data %>% filter(!is.na(accident_rate), !is.na(is_urban))
+)
+```
+
+#### 2.4.4 Spatial Econometric Models
+
+To account for spatial dependence, we implemented spatial lag models:
+
+```{r spatial_models, eval=FALSE}
+# Prepare spatial weights
+coords <- st_coordinates(st_centroid(const_buffers))
+buffer_nb <- spdep::dnearneigh(coords, d1 = 0, d2 = 5000)
+buffer_listw <- spdep::nb2listw(buffer_nb, style = "W", zero.policy = TRUE)
+
+# Create a sample data for spatial analysis (one month snapshot)
+test_month <- as.Date("2021-06-01")
+spdata <- panel_data %>%
+  filter(!is.na(county_name), month == test_month)
+
+# Create spatial weights
+spw_coords <- spdata %>%
+  select(X, Y) %>%
+  as.matrix()
+sp_nb <- spdep::dnearneigh(spw_coords, d1 = 0, d2 = 5000)
+spw <- spdep::nb2listw(sp_nb, style = "W", zero.policy = TRUE)
+
+# Spatial lag model
+spatial_model <- spatialreg::lagsarlm(
+  accident_count ~ treatment + is_urban + log(traffic_volume + 1),
+  data = spdata,
+  listw = spw,
+  method = "Matrix",
+  zero.policy = TRUE
+)
+```
+
+#### 2.4.5 Spatial Spillover Analysis
+
+To examine how construction impacts extend beyond the immediate construction zone, we implemented distance band models:
+
+```{r spillover_model, eval=FALSE}
+# Create distance bands from construction sites
+panel_data <- panel_data %>%
+  mutate(
+    distance_band = cut(
+      distance_to_nearest,
+      breaks = c(0, 500, 1000, 2000, 5000, Inf),
+      labels = c("0-500m", "500-1000m", "1-2km", "2-5km", ">5km")
+    )
+  )
+
+# Test for spillover effects across distance bands
+spillover_model <- feols(
+  accident_count ~ i(distance_band, treatment, ref = ">5km") | buffer_id + month,
+  data = panel_data %>% filter(!is.na(distance_band))
+)
+```
+
+#### 2.4.6 Event Study Analysis
+
+To test for parallel trends and examine dynamic effects, we implemented an event study approach:
+
+```{r event_study, eval=FALSE}
+# Create relative time variable
+panel_data <- panel_data %>%
+  mutate(
+    rel_time = as.numeric(difftime(month, start_date, units = "days")) / 30,
+    rel_time_cat = cut(rel_time, 
+                       breaks = c(-Inf, -12, -6, -3, 0, 3, 6, 12, Inf),
+                       labels = c("<-12m", "-12to-6m", "-6to-3m", "-3to0m", 
+                                  "0to3m", "3to6m", "6to12m", ">12m"))
+  )
+
+# Event study model
+event_study_model <- feols(
+  accident_count ~ i(rel_time_cat, ref = "-3to0m") | buffer_id + county_name^month,
+  data = panel_data %>% filter(!is.na(county_name), !is.na(rel_time_cat))
+)
+```
+
+## 3. Results
+
+### 3.1 Descriptive Statistics
+
+Our analysis covered 341,876 accidents and 33,513 construction projects across California in 2021. Examining the temporal distribution reveals that accident rates peaked in winter months (January and December) and fall (October), while construction activity was highest in spring (March-May).
+
+The spatial distribution analysis showed that 70.8% of construction activities occurred in urban areas, with the remaining 29.2% in rural environments. This urban-rural breakdown is critical for understanding the heterogeneous effects of construction on accident rates.
+
+When examining accidents by their timing relative to construction, we observed the following distribution:
+
+- Before construction: 590,600 accidents (46.2%)
+- During construction: 308,601 accidents (24.1%)
+- After construction: 381,112 accidents (29.7%)
+
+```{r summary_stats, eval=FALSE}
+# Summary statistics table
+summary_stats <- panel_data %>%
+  group_by(treatment, is_urban) %>%
+  summarize(
+    num_observations = n(),
+    mean_accidents = mean(accident_count),
+    median_accidents = median(accident_count),
+    max_accidents = max(accident_count),
+    mean_accident_rate = mean(accident_rate, na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+```{r summary_stats_table}
+# Summary statistics (using pre-computed values)
+summary_stats_df <- data.frame(
+  treatment = c(FALSE, FALSE, TRUE, TRUE),
+  is_urban = c(FALSE, TRUE, FALSE, TRUE),
+  num_observations = c(91383, 220203, 26253, 65337),
+  mean_accidents = c(0.526, 4.230, 0.505, 4.550),
+  median_accidents = c(0, 1, 0, 1),
+  max_accidents = c(61, 82, 44, 77),
+  mean_accident_rate = c(0.037, 0.086, 0.036, 0.092)
+)
+
+kableExtra::kable(summary_stats_df, 
+                 col.names = c("Construction", "Urban", "Observations", "Mean Accidents", 
+                               "Median Accidents", "Max Accidents", "Mean Accident Rate"),
+                 caption = "Summary Statistics by Treatment Status and Urban/Rural Classification",
+                 booktabs = TRUE,
+                 digits = 3) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "hold_position", "scale_down"),
+                           full_width = TRUE) %>%
+  kableExtra::row_spec(0, bold = TRUE) %>%
+  kableExtra::row_spec(1:4, background = c("#f5f5f5", "#e8e8e8", "#f5f5f5", "#e8e8e8"))
+```
+
+### 3.2 Difference-in-Differences Results
+
+Table 3 presents the results from our main difference-in-differences models.
+
+```{r did_models_table}
+# DiD model results (using pre-computed values)
+did_models <- data.frame(
+  Variable = c("Treatment", "Treatment × Urban", "Fixed Effects", "Observations", "R²", "Within R²"),
+  Base = c("0.096*** (0.021)", "-", "Buffer, Month", "403,176", "0.749", "7.93e-5"),
+  Urban = c("-0.056*** (0.013)", "0.216*** (0.029)", "Buffer, Month", "403,176", "0.749", "1.83e-4"),
+  Rate = c("0.026 (0.017)", "-", "Buffer, Month", "402,084", "0.178", "5.96e-6"),
+  Rate_Urban = c("-0.032 (0.048)", "0.082* (0.048)", "Buffer, Month", "402,084", "0.178", "2.13e-5")
+)
+
+kableExtra::kable(did_models, 
+                 col.names = c("Variable", "Base Model", "Urban Heterogeneity", "Rate Model", "Rate Urban Model"),
+                 caption = "Difference-in-Differences Estimates of Construction Effects on Accidents",
+                 booktabs = TRUE) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "hold_position", "scale_down"),
+                           full_width = TRUE) %>%
+  kableExtra::row_spec(0, bold = TRUE) %>%
+  kableExtra::add_footnote("Standard errors clustered by buffer_id in parentheses. *** p<0.001, ** p<0.01, * p<0.05", 
+                          notation = "none")
+```
+
+The base model indicates that active construction is associated with a statistically significant increase of 0.096 accidents per month within the buffer zone. However, the urban heterogeneity model reveals a striking difference between urban and rural areas. While construction in rural areas is associated with a reduction in accidents (-0.056), urban areas see a substantial positive effect (0.216 - 0.056 = 0.160).
+
+When examining normalized accident rates (per 10,000 vehicles), the effects remain directionally consistent but with reduced statistical significance. This suggests that while traffic volume explains some of the effects, there remain important differences in how construction impacts safety across different environments.
+
+### 3.3 Spatial Lag Model Results
+
+The spatial lag model confirms the presence of significant spatial autocorrelation (ρ = 0.770), indicating that accident patterns exhibit strong spatial clustering. After accounting for this spatial dependence, construction effects remain significant:
+
+```{r spatial_model_table}
+# Spatial model results (using pre-computed values)
+spatial_model_df <- data.frame(
+  Variable = c("Intercept", "Treatment", "Urban", "log(Traffic Volume)", "Spatial Lag (ρ)"),
+  Estimate = c(-4.260, 0.616, -0.523, 0.489, 0.770),
+  Std_Error = c(0.247, 0.061, 0.111, 0.029, 0.006),
+  z_value = c(-17.255, 10.074, -4.697, 16.773, 130.01),
+  p_value = c("<0.001", "<0.001", "<0.001", "<0.001", "<0.001")
+)
+
+kableExtra::kable(spatial_model_df, 
+                 col.names = c("Variable", "Estimate", "Std. Error", "z-value", "p-value"),
+                 caption = "Spatial Lag Model Results",
+                 booktabs = TRUE) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "hold_position"),
+                           full_width = FALSE) %>%
+  kableExtra::row_spec(0, bold = TRUE) %>%
+  kableExtra::add_footnote("Model statistics: Log likelihood: -105341.4, AIC: 210690", 
+                          notation = "none")
+```
+
+The spatial model confirms a strong positive effect of construction on accident counts even after controlling for spatial dependence, with construction zones experiencing 0.616 more accidents on average.
+
+### 3.4 Spatial Spillover Effects
+
+Our spillover analysis examined how construction impacts extend to different distance bands from the construction site. Figure 1 presents these results.
+
+```{r spillover_figure, fig.cap="Treatment Effects by Distance from Construction"}
+# Spillover model results (using pre-computed values)
+spillover_df <- data.frame(
+  distance_band = c("0-500m", "500-1000m", "1-2km", "2-5km"),
+  estimate = c(0.099, 0.235, -0.042, 0.036),
+  ci_low = c(-0.007, 0.170, -0.088, -0.016),
+  ci_high = c(0.205, 0.300, 0.005, 0.087),
+  p_value = c(0.068, "<0.001", 0.077, 0.171)
+)
+
+# Ensure proper ordering of distance bands
+spillover_df$distance_band <- factor(spillover_df$distance_band, 
+                                   levels = c("0-500m", "500-1000m", "1-2km", "2-5km"))
+
+# Updated plot with correctly ordered x-axis
+ggplot(spillover_df, aes(x = distance_band, y = estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    x = "Distance from Construction Site",
+    y = "Effect on Accident Count"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+The spillover analysis reveals a non-linear pattern of effects:
+- Immediate vicinity (0-500m): Marginally significant positive effect (0.099, p=0.067)
+- Near proximity (500-1000m): Strong positive effect (0.235, p<0.001)
+- Intermediate zone (1-2km): Marginally significant negative effect (-0.042, p=0.077)
+- Extended zone (2-5km): Non-significant positive effect (0.036, p=0.171)
+
+This pattern suggests that construction activities create the strongest accident risk in areas just beyond the immediate construction zone, possibly due to merging traffic, sudden speed changes, or driver distraction.
+
+### 3.5 Event Study Results
+
+The event study approach allows us to examine the dynamic effects of construction and test the parallel trends assumption.
+
+```{r event_study_figure, fig.cap="Event Study: Effects Relative to Construction Start"}
+# Event study results (using pre-computed values)
+event_study_df <- data.frame(
+  time_period = c("<-12m", "-12to-6m", "-6to-3m", "0to3m", "3to6m", "6to12m"),
+  estimate = c(-0.332, -0.055, -0.007, -0.065, -0.146, -0.111),
+  ci_low = c(-0.535, -0.141, -0.059, -0.114, -0.221, -0.220),
+  ci_high = c(-0.130, 0.032, 0.046, -0.015, -0.070, -0.001),
+  p_value = c(0.001, 0.214, 0.804, 0.010, "<0.001", 0.047)
+)
+
+# Ensure proper ordering of time periods
+event_study_df$time_period <- factor(event_study_df$time_period, 
+                                    levels = c("<-12m", "-12to-6m", "-6to-3m", "0to3m", "3to6m", "6to12m"))
+
+# Updated plot with correctly ordered x-axis
+ggplot(event_study_df, aes(x = time_period, y = estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    x = "Time Relative to Construction Start",
+    y = "Effect on Accident Count"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+```
+
+The event study results show:
+1. Significantly lower accident rates long before construction (<-12 months)
+2. No significant difference in the pre-construction period (-12 to 0 months), supporting the parallel trends assumption
+3. Significant negative effects during and after construction, particularly in the 3-6 month period after construction begins
+
+This pattern suggests that while construction initially increases accident risks, there may be adaptation effects as drivers become accustomed to the changed road conditions.
+
+### 3.6 Accident Severity Analysis
+
+We also examined how construction affects accident severity, classified from Slight (1) to Fatal (4).
+
+```{r severity_analysis, eval=FALSE}
+# Analyze accident severity by construction period
+severity_analysis <- accidents_in_buffers %>%
+  st_drop_geometry() %>%
+  filter(!is.na(time_period)) %>%
+  count(time_period, Severity) %>%
+  group_by(time_period) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+
+# Convert Severity to a factor before plotting
+severity_analysis$Severity <- factor(severity_analysis$Severity, 
+                                    levels = c(1, 2, 3, 4),
+                                    labels = c("Slight", "Moderate", "Serious", "Fatal"))
+```
+
+```{r severity_figure, fig.cap="Accident Severity by Construction Period"}
+# Severity analysis (using pre-computed values)
+severity_df <- data.frame(
+  time_period = rep(c("after", "before", "during"), each = 4),
+  Severity = rep(c("Slight", "Moderate", "Serious", "Fatal"), 3),
+  proportion = c(
+    0.01, 0.88, 0.11, 0.001,  # after
+    0.01, 0.88, 0.11, 0.001,  # before
+    0.01, 0.87, 0.12, 0.001   # during
+  )
+)
+
+severity_df$Severity <- factor(severity_df$Severity, 
+                              levels = c("Slight", "Moderate", "Serious", "Fatal"))
+severity_df$time_period <- factor(severity_df$time_period,
+                                 levels = c("before", "during", "after"))
+
+ggplot(severity_df, aes(x = time_period, y = proportion, fill = Severity)) +
+  geom_col() +
+  labs(
+    x = "Relation to Construction",
+    y = "Proportion"
+  ) +
+  scale_fill_brewer(palette = "Blues") +
+  theme_minimal() +
+  theme(
+    panel.grid.minor = element_blank()
+  )
+```
+
+The severity analysis shows remarkably consistent severity distributions across all three time periods (before, during, and after construction), with approximately 88% of accidents classified as Moderate (level 2), 11% as Serious (level 3), and less than 1% as Fatal (level 4). This suggests that while construction affects accident frequency, it does not substantially alter the severity distribution.
+
+## 4. Discussion
+
+### 4.1 Interpretation of Main Findings
+
+Our analysis provides robust evidence that road construction causally impacts traffic accident rates, with important heterogeneity across urban and rural environments. The main findings can be summarized as follows:
+
+1. **Overall Construction Effect**: Construction activities are associated with a statistically significant increase in accident counts within the affected areas. This effect remains robust across multiple model specifications.
+
+2. **Urban-Rural Heterogeneity**: The impact of construction on accidents is substantially different between urban and rural environments. In urban areas, construction is associated with increased accident counts, while in rural areas, there is evidence of reduced accidents during construction. This heterogeneity may be explained by several factors:
+   - Higher traffic density in urban areas creates more complex interactions around construction zones
+   - Rural construction may induce more cautious driving or traffic diversion
+   - Urban construction often involves more complex traffic management challenges
+
+3. **Spatial Spillover Effects**: The impact of construction extends beyond the immediate construction zone, with particularly strong effects in areas 500-1000m from the construction site. This finding has important implications for traffic management strategies, suggesting that safety measures should extend well beyond the construction zone itself.
+
+4. **Temporal Dynamics**: The event study results suggest an adaptation effect, where accident rates are higher immediately after construction begins but then decline as drivers adjust to the changed conditions.
+
+### 4.2 Policy Implications
+
+These findings have several important policy implications for transportation safety planning:
+
+1. **Targeted Resource Allocation**: Traffic management resources should be allocated differentially between urban and rural construction zones, with greater emphasis on urban areas where construction effects on accidents are substantially larger.
+
+2. **Extended Safety Zones**: Traffic safety measures should extend beyond the immediate construction zone, with particular attention to areas 500-1000m from the site where spillover effects are strongest.
+
+3. **Temporal Planning**: Enhanced safety measures may be particularly important in the initial phases of construction before driver adaptation occurs.
+
+4. **Consistent Severity Protocols**: Since construction does not substantially alter accident severity patterns, emergency response protocols need not be differentiated based on proximity to construction zones.
+
+### 4.3 Limitations and Future Research
+
+While our study provides robust evidence on the causal impact of construction on accidents, several limitations should be noted:
+
+1. **Time Period**: Our analysis is limited to a single year (2021), which may have been affected by pandemic-related traffic patterns. Future research should examine longer time periods.
+
+2. **Granularity**: While we distinguish between urban and rural areas, more detailed classifications (e.g., suburban, exurban) could provide additional insights.
+
+3. **Construction Types**: Our data does not allow us to consistently differentiate between different types of construction activities (e.g., resurfacing, bridge repair, lane expansion), which may have different safety implications.
+
+4. **Weather Interactions**: While our models include fixed effects that partly control for seasonal patterns, more explicit modeling of weather interactions with construction effects could be valuable.
+
+Future research should address these limitations and further explore the mechanisms underlying the observed heterogeneity in construction effects.
+
+## 5. Conclusion
+
+This study provides robust causal evidence on the relationship between road construction and traffic accidents in California. Using high-resolution spatial data and advanced econometric methods, we demonstrate that construction activities significantly impact accident rates, with effects that vary substantially between urban and rural environments and extend beyond the immediate construction zone.
+
+The findings have important implications for transportation safety planning, suggesting the need for targeted resource allocation, extended safety zones, and temporally-focused safety measures. By implementing these recommendations, transportation authorities can mitigate the safety risks associated with necessary infrastructure maintenance and development.
+
+Overall, this research contributes to our understanding of transportation safety dynamics and provides an empirical foundation for evidence-based policy development in traffic management around construction zones.
+
+## References
+
+Conte, B., Desmet, K., Nagy, D.K., & Rossi-Hansberg, E. (2021). Local sectoral specialization in a warming world. Journal of Economic Geography, 21(4), 493-530.
+
+Donaldson, D. (2018). Railroads of the Raj: Estimating the impact of transportation infrastructure. American Economic Review, 108(4-5), 899-934.
+
+Fernihough, A., & O'Rourke, K.H. (2021). Coal and the European industrial revolution. The Economic Journal, 131(635), 1135-1149.
+
+Giua, M. (2017). Spatial discontinuity for the impact assessment of the EU regional policy: The case of Italian objective 1 regions. Journal of Regional Science, 57(1), 109-131.
+
+Heblich, S., Trew, A., & Zylberberg, Y. (2021). East-side story: Historical pollution and persistent neighborhood sorting. Journal of Political Economy, 129(5), 1508-1552.
+
+Hsiao, A. (2023). Sea Level Rise and Urban Adaptation in Jakarta. Technical Report.

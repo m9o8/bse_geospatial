@@ -1,20 +1,22 @@
 ---
-title: "Geospatial Data Science - Final project"
+title: "California Road Construction Safety Analysis: A Spatial Econometric Approach"
 author:
 - Moritz Peist
 - Noemi Lucchi
 - Simon Vellin
-subtitle: Analysis of US road accidents and construction sites
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
   html_document:
     toc: true
+    toc_depth: 3
+    toc_float: true
     df_print: paged
-  html_notebook:
-    df_print: paged
-    toc: true
+    code_folding: show
+    fig_caption: true
+    number_sections: true
+    progress: false
+    warning: false
 ---
-
-<hr>
 
 ```{css, echo=FALSE}
 h1.title {
@@ -33,7 +35,6 @@ h4.author, h4.date {
   text-align: center;
 }
 
-/* Add styling for subtitle */
 h3.subtitle {
   text-align: center;
   font-style: italic;
@@ -42,87 +43,119 @@ h3.subtitle {
 }
 ```
 
-<div style="text-align: center;">
-  <img src="../Barcelona_School_of_Economics_logo.svg" alt="BSE logo">
-</div>
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE, 
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5,
+  out.width = "100%",
+  fig.align = "center",
+  comment = "#>"
+)
 
-<hr>
-
-Load packages
-
-```{r Packages}
-library(data.table)   # For faster data manipulation
-library(tidyverse)    # For data manipulation and visualization
-library(sf)           # For spatial data handling
-library(leaflet)      # For interactive maps
-library(leaflet.extras) # For additional leaflet features
-library(mapview)      # For easier map visualization
-library(tmap)         # For thematic maps
-library(tigris)       # For US road networks
-library(future)       # For parallel processing
-library(future.apply) # For parallel processing with apply functions
-library(sf)           # For spatial data handling
-library(RPostgres)    # For PostgreSQL connection
-library(DBI)          # For database interface
+# Load required libraries
+library(data.table)      # For faster data manipulation
+library(tidyverse)       # For data manipulation and visualization
+library(sf)              # For spatial data handling
+library(leaflet)         # For interactive maps
+library(leaflet.extras)  # For additional leaflet features
+library(mapview)         # For easier map visualization
+library(tmap)            # For thematic maps
+library(tigris)          # For US road networks
+library(fixest)          # For fixed effects models
+library(spdep)           # For spatial weights and tests
+library(splm)            # For spatial panel models
+library(RColorBrewer)    # For color palettes
+library(patchwork)       # For combining plots
+library(kableExtra)      # For nice tables
+library(lubridate)       # For date manipulation
+library(viridis)         # For color palettes
 
 # Create directories if they don't exist
 if (!dir.exists("./data/tigris")) {
   dir.create("./data/tigris", recursive = TRUE)
 }
 
-# Set custom cache directory (optional)
+# Set custom cache directory
 options(tigris_cache_dir = "./data/tigris")
 # Configure tigris to use caching
 options(tigris_use_cache = TRUE)
 ```
 
+<div style="text-align: center;">
+  <img src="../Barcelona_School_of_Economics_logo.svg" alt="BSE logo" style="width: 200px;">
+</div>
 
-# Set-up convenience functions for parallel processing (as data is quite large)
-```{r Parallel Buffering}
-# Function to create buffers in batches with proper projection
-create_buffers_in_batches <- function(sf_object, buffer_dist, batch_size = 500) {
-  # First, reproject to an appropriate projected CRS for the region
-  # For California, UTM Zone 10N (EPSG:26910) or 11N (EPSG:26911) works well
-  # If we're unsure about your region, a web mercator projection (3857) is a reasonable default
-  message("Reprojecting data to a meter-based CRS...")
-  sf_object_projected <- st_transform(sf_object, 3310)  # Web Mercator
-  
-  n_features <- nrow(sf_object_projected)
-  n_batches <- ceiling(n_features / batch_size)
-  
-  # Create empty list to store results
-  buffer_list <- vector("list", n_batches)
-  
-  # Process in batches
-  for (i in 1:n_batches) {
-    start_idx <- (i-1) * batch_size + 1
-    end_idx <- min(i * batch_size, n_features)
-    
-    cat(sprintf("Processing batch %d of %d (features %d to %d)\n", 
-                i, n_batches, start_idx, end_idx))
-    
-    # Extract batch
-    batch <- sf_object_projected[start_idx:end_idx, ]
-    
-    # Create buffer (with parallel processing within sf)
-    buffer_list[[i]] <- st_buffer(batch, dist = buffer_dist)
-  }
-  
-  # Combine results
-  result <- do.call(rbind, buffer_list)
-  
-  # Reproject back to original CRS if needed
-  message("Reprojecting results back to original CRS...")
-  st_transform(result, st_crs(sf_object))
-}
-```
+# Abstract
 
+This study examines the causal relationship between road construction activities and traffic accident rates in California using high-resolution spatial data from 2021. Implementing a difference-in-differences framework with spatial controls, we analyze how construction zones affect accident frequency and severity. Our findings indicate a significant relationship between active construction and accident occurrence, with heterogeneous effects across urban and rural environments. Spatial spillover analysis reveals that accident impacts extend beyond immediate construction zones, with pronounced effects in areas surrounding construction sites. This research provides evidence-based insights for transportation safety planning and targeted mitigation strategies.
 
+# Introduction
 
-Load data (filter for California for now to limit data set size)
+Road construction is a necessary yet potentially disruptive component of transportation infrastructure maintenance and development. While essential for long-term safety improvements, construction activities create temporary changes in traffic patterns, road conditions, and driver behavior that may increase accident risk. Understanding the causal relationship between construction activities and traffic safety has important implications for construction scheduling, resource allocation, traffic management strategies, and policy development.
 
-```{r Data Load Accidents}
-# Efficient approach
+Despite the importance of this relationship, rigorous causal evidence on how road construction affects traffic accidents remains limited, particularly with respect to potential heterogeneity between urban and rural environments. This study addresses this gap by leveraging comprehensive spatial data on road construction activities and traffic accidents in California during 2021 to answer the following research questions:
+
+1. How does road construction causally impact traffic accident rates?
+2. Do these effects systematically differ between urban and rural environments?
+3. Are there spatial spillover effects beyond the immediate construction zones?
+
+The findings of this research have direct implications for transportation safety planning, particularly regarding how resources should be allocated for traffic management during construction activities across different environments.
+
+# Literature Review
+
+To establish a contextual foundation for our study, we reviewed existing literature on the relationship between road construction and traffic accidents, focusing on studies that use spatial or causal inference approaches.
+
+## 2.1 ["Effects of truck traffic on crash injury severity on rural highways in Wyoming using Bayesian binary logit models" by Ahmed et al. (2018)](https://www.sciencedirect.com/science/article/pii/S0001457518301507)
+
+This paper explores the impact of truck traffic and roadway geometry on crash frequency within highway work zones, using a case study from Wyoming spanning 2012–2016.
+
+Using crash data and statistical modeling, the authors assess how construction-related factors, like lane closures and heavy vehicle presence, elevate accident risks. Their paper reveals that increased truck volumes and sharper geometric features significantly amplify crash rates, with work zones acting as hotspots for such incidents. While the paper employs logistic regression rather than causal inference techniques, it underscores the real-world relevance of construction disruptions on traffic safety.
+
+This work provides a practical foundation for our study, highlighting the need to isolate causal effects of construction using advanced methods. By focusing on observable crash patterns, Ahmed et al. set the stage for deeper methodological exploration in our difference-in-differences framework.
+
+## 2.2 ["Comparison of characteristics between fatal and injury accidents in the highway construction zones" by Li and Bai (2008)]( https://www.sciencedirect.com/science/article/pii/S0925753507001014)
+
+This paper investigates the characteristics of accidents in highway construction zones from a statistical perspective, comparing fatal and injury crashes using data from Utah between 1992 and 2004.
+
+Using traffic volume, construction duration, and time of day, their results show that construction zones markedly increase accident likelihood, with fatal crashes tied to higher speeds and nighttime conditions. Although the study relies on descriptive statistics and regression rather than causal frameworks, it offers critical insights into how construction alters road safety dynamics.
+
+## Accident Risk in Highway Construction Zones
+
+The relationship between construction activities and traffic accidents has been investigated in several studies. Ahmed et al. (2018) explored the impact of truck traffic and roadway geometry on crash frequency within highway work zones in Wyoming. Their analysis revealed that increased truck volumes and sharper geometric features significantly amplified crash rates, with work zones acting as hotspots for accidents. While their study employed logistic regression rather than causal inference techniques, it highlighted the real-world relevance of construction disruptions on traffic safety.
+
+Li and Bai (2008) compared the characteristics of fatal and injury crashes in highway construction zones using data from Utah (1992-2004). Their results showed that construction zones markedly increase accident likelihood, with fatal crashes tied to higher speeds and nighttime conditions. Although they relied on descriptive statistics rather than causal frameworks, their work established a clear link between construction activities and accident rates.
+
+The literature generally suggests that construction zones are associated with increased accident risk, but most studies have not employed causal inference methods to isolate this effect from confounding factors. Additionally, few studies have examined the spatial heterogeneity of construction effects on accidents, particularly regarding urban-rural differences. Our study addresses these gaps by employing a difference-in-differences framework with spatial controls to identify the causal impact of construction activities on accident rates.
+
+# Data and Methods
+
+## Data Sources
+
+This study integrates multiple large-scale datasets to create a comprehensive spatial-temporal framework for analysis:
+
+**Primary Datasets:**
+
+  1. [**US Road Construction and Closures Dataset (2021)**](https://www.kaggle.com/datasets/sobhanmoosavi/us-road-construction-and-closures) - Contains detailed records of construction activities in California with coordinates, start/end times, and affected distances
+  2. [**US Traffic Accidents Dataset (2021)**](https://www.kaggle.com/datasets/sobhanmoosavi/us-accidents) - Comprehensive accident records with precise locations, timestamps, and severity measures
+  3. [**Caltrans State Highway Network**](https://catalog.data.gov/dataset/traffic-volumes-aadt-ee8d6/resource/904a8300-9b57-4765-8ed7-cca0c83cdede) - Annual Average Daily Traffic (AADT) data for normalizing accident rates by traffic volume
+  4. **US Census Bureau Urban Areas** - Official urban/rural classifications for spatial heterogeneity analysis
+
+For both the accident and construction datasets, the data was collected using multiple APIs such as the US and state departments of transportation, law enforcement agencies, traffic cameras, and traffic sensors within the road networks.
+
+While our analysis uses 2021 accident and construction data, we integrated Annual Average Daily Traffic (AADT) data from Caltrans to normalize accident rates. The AADT dataset provides a comprehensive traffic volume baseline that reflects typical traffic patterns, mitigating potential short-term fluctuations. Though the AADT data may include projections or estimates from surrounding years, it represents the most reliable and granular traffic volume information available, enabling more precise exposure-adjusted accident rate calculations.
+
+## Data Preparation and Exploration
+
+We focused our analysis on California road construction and accidents from 2021, creating a spatial-temporal framework that allows us to examine the causal relationship between construction activities and accidents.
+
+```{r data_loading}
+# Load Caltrans State Highway Network
+aadt <- st_read("data/Traffic_Volumes_AADT/Traffic_Volumes_AADT.shp")
+
+# Load and filter accidents data
 df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
   # Filter date range of 2021
   lubridate::year(as.Date(Start_Time)) == 2021 & 
@@ -133,13 +166,12 @@ df.acc <- fread("data/us_accidents/US_accidents_March23.csv")[
   year = data.table::year(Start_Time),
   quarter = data.table::quarter(Start_Time),
   month = data.table::month(Start_Time),
-  # Calculate duration (assuming End_Time exists in the dataset)
+  # Calculate duration
   duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
 )] %>% 
-  as_tibble()  # Convert to tibble only at the end for performance
-```
+  as_tibble()
 
-```{r Data Load Constructions}
+# Load and filter construction data
 df.const <- fread("data/us_constructions/US_constructions_Dec21.csv")[
   # Filter date range of 2021
   lubridate::year(as.Date(Start_Time)) == 2021 & 
@@ -150,105 +182,160 @@ df.const <- fread("data/us_constructions/US_constructions_Dec21.csv")[
   year = year(Start_Time),
   quarter = quarter(Start_Time),
   month = month(Start_Time),
-  # Calculate duration (assuming End_Time exists in the dataset)
+  # Calculate duration
   duration = as.numeric(difftime(End_Time, Start_Time, units = "days"))
-)] %>% 
-  as_tibble()  # Convert to tibble only at the end for performance
+)][
+  duration > 1  # Filter out constructions lasting less than a day
+] %>% 
+  as_tibble()
+
+# Load California road network for mapping
+ca_roads <- tigris::primary_roads("CA", year = 2021, refresh=TRUE) %>%
+  st_transform(4326)
 ```
 
-Convert dataframes to sf objects
+```{r data_summary}
+# Calculate and display actual data summary
+accidents_count <- nrow(df.acc)
+construction_count <- nrow(df.const)
+aadt_count <- nrow(aadt)
 
-```{r Geospatial Data}
-# Convert accident data to sf object
-df.acc.sf <- df.acc %>%
-  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
-  st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326)
-
-# Convert construction data to sf object
-df.const.sf <- df.const %>%
-  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
-  st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326)
+cat("Summary of datasets:\n")
+cat("- Accidents dataset:", accidents_count, "records\n")
+cat("- Construction dataset:", construction_count, "records\n")
+cat("- AADT dataset:", aadt_count, "records\n")
 ```
 
+### Temporal Patterns
 
-```{r Data Load Roads}
-# Get US roads (this can be slow for the entire US, so we might want to limit by state)
-# We also only get Primary and Secondary roads as they are the most important (i.e., where most constructions and accidents happen). Otherwise, the dataset would become to large (1.1GB)
+```{r temporal_patterns}
+# Temporal patterns visualization using actual data
+acc_monthly <- df.acc %>%
+  mutate(month = floor_date(as.Date(Start_Time), "month")) %>%
+  count(month)
 
-ca_roads <- primary_secondary_roads("CA", year = 2021)
+const_monthly <- df.const %>%
+  mutate(month = floor_date(as.Date(Start_Time), "month")) %>%
+  count(month)
 
-# Below code to get ALL roads for California (not recommended due to size)
-
-# First get all counties in California
-#ca_counties <- counties("CA", year = 2021)
-
-# Then get roads for each county
-#ca_roads_list <- lapply(ca_counties$COUNTYFP, function(county_code) {
-#  roads("CA", county = county_code, year = 2021)
-#})
-
-# Optionally combine all county road data into one object
-#ca_roads <- do.call(rbind, ca_roads_list)
-```
-
-
-```{r Static Maps}
-# Static map for Accidents with year coloring
-# First, store your plot in a variable
-ca_plot <- ggplot() +
-  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  geom_sf(data = df.acc.sf %>% filter(State == "CA"), 
-          aes(color = factor(year)), alpha = 0.7, size = 0.5) +
-  scale_color_viridis_d(name = "Year") +  # Use viridis color palette for discrete values
+# Plot monthly patterns
+p1 <- ggplot(acc_monthly, aes(x = month, y = n)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "blue", size = 3) +
+  labs(title = "Monthly Accidents in California (2021)",
+       x = "Month", y = "Count") +
+  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
   theme_minimal() +
-  labs(title = "US Road Accidents by Year (2016-2021)") +
-  theme(legend.position = "bottom")
-print(ca_plot)
-# Then save it using ggsave
-ggsave(filename = "imgs/california_accidents.png", 
-       plot = ca_plot,
-       width = 10, # width in inches
-       height = 8, # height in inches
-       dpi = 300)  # resolution
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
 
-# Construction sites map with year coloring
-# First, store our plot in a variable
+p2 <- ggplot(const_monthly, aes(x = month, y = n)) +
+  geom_line(color = "red", size = 1) +
+  geom_point(color = "red", size = 3) +
+  labs(title = "New Construction Projects in California (2021)",
+       x = "Month", y = "Count") +
+  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+p1 / p2
+```
+
+The temporal distribution reveals distinct patterns for accidents and construction projects. Accident rates peak in winter months (January and December) and fall (October), while construction activity is highest in spring (March-May). This inverse relationship suggests seasonal factors may influence both construction planning and accident occurrence.
+
+### Spatial Distribution
+
+Let's examine the spatial distribution of accidents and construction sites across California.
+
+```{r spatial_processing}
+# Create spatial objects from actual data
+if (!inherits(df.acc, "sf")) {
+  df.acc.sf <- df.acc %>%
+    filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+    st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326) %>%
+    st_transform(crs = 3310)  # CA Albers for accurate distance
+} else {
+  df.acc.sf <- df.acc
+}
+
+if (!inherits(df.const, "sf")) {
+  df.const.sf <- df.const %>%
+    filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+    st_as_sf(coords = c("Start_Lng", "Start_Lat"), crs = 4326) %>%
+    st_transform(crs = 3310)
+} else {
+  df.const.sf <- df.const
+}
+```
+
+```{r static_maps}
+# Create a subsample for visualization (plotting all points would be too dense)
+set.seed(123)
+acc_sample <- df.acc.sf %>%
+  sample_n(min(10000, nrow(.)))
+
+const_sample <- df.const.sf %>%
+  sample_n(min(5000, nrow(.)))
+
+# Static map for Accidents with month coloring
+ca_acc_plot <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = acc_sample, 
+          aes(color = factor(month)), alpha = 0.5, size = 0.5) +
+  scale_color_viridis_d(name = "Month", option = "plasma") +
+  coord_sf(
+    xlim = c(-124.5, -114.5),
+    ylim = c(32.5, 42.5)
+  ) +
+  theme_minimal() +
+  labs(title = "California Road Accidents (2021)") +
+  theme(legend.position = "bottom")
+
+# Construction sites map with severity coloring
 ca_const_plot <- ggplot() +
   geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  geom_sf(data = df.const.sf %>% filter(State == "CA"), 
-          aes(color = factor(year)), alpha = 0.7, size = 0.5) +
-  scale_color_viridis_d(name = "Year") +  # Use viridis color palette for discrete values
+  geom_sf(data = const_sample, 
+          aes(color = factor(Severity)), alpha = 0.7, size = 0.5) +
+  scale_color_viridis_d(name = "Severity", option = "plasma") +
+  coord_sf(
+    xlim = c(-124.5, -114.5),
+    ylim = c(32.5, 42.5)
+  ) +
   theme_minimal() +
-  labs(title = "US Construction Sites by Year (2016-2021)") +
+  labs(title = "California Construction Sites by Severity (2021)") +
   theme(legend.position = "bottom")
-print(ca_const_plot)
-# Then save it using ggsave
-ggsave(filename = "imgs/california_construction.png", 
-       plot = ca_const_plot,
-       width = 10, # width in inches
-       height = 8, # height in inches
-       dpi = 300)  # resolution
+
+# Display the plots
+ca_acc_plot
+ca_const_plot
 ```
 
+### Density Heatmaps
 
-```{r Heatmap static}
+To better visualize the spatial concentration, we created heatmaps for both accidents and construction sites.
+
+```{r heatmaps}
+# Sample data for creating heatmaps (using smaller sample for performance)
+set.seed(123)
+acc_sample_for_heatmap <- df.acc %>%
+  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+  sample_n(min(50000, nrow(.)))
+
+const_sample_for_heatmap <- df.const %>%
+  filter(!is.na(Start_Lat) & !is.na(Start_Lng)) %>%
+  sample_n(min(10000, nrow(.)))
+
 # Create heatmap of accidents using ggplot2
-# Modified accident heatmap with transparency for low density areas
 accident_heatmap <- ggplot() +
-  # Add California roads as base layer
   geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  # Create density heatmap with transparency threshold
   stat_density_2d(
-    data = df.acc %>% filter(!is.na(Start_Lat) & !is.na(Start_Lng)),
+    data = acc_sample_for_heatmap,
     aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density), alpha = after_stat(density)),
     geom = "tile", 
     contour = FALSE,
-    h = 0.1,
-    n = 200
+    h = 0.2,  # Increased bandwidth for better visualization
+    n = 150
   ) +
-  # Set alpha scaling with a minimum threshold
   scale_alpha_continuous(range = c(0, 0.9), guide = "none") +
-  # Use color scheme similar to leaflet's default heatmap
   scale_fill_gradientn(
     colors = c("#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF0000"),
     name = "Accident\nDensity"
@@ -259,7 +346,7 @@ accident_heatmap <- ggplot() +
   ) +
   theme_minimal() +
   labs(
-    title = "Accident Density Heatmap in California (2016-2021)",
+    title = "Accident Density Heatmap in California (2021)",
     x = NULL,
     y = NULL
   ) +
@@ -267,48 +354,32 @@ accident_heatmap <- ggplot() +
     legend.position = "right",
     plot.title = element_text(face = "bold")
   )
-# Display the plot
-print(accident_heatmap)
 
-ggsave(filename = "imgs/accident_heatmap.png", 
-       plot = accident_heatmap,
-       width = 10, # width in inches
-       height = 8, # height in inches
-       dpi = 300)  # resolution
-
-```
-
-
-```{r Construction Heatmap static}
-# Create heatmap of construction sites using ggplot2
+# Construction sites heatmap
 construction_heatmap <- ggplot() +
-  # Add California roads as base layer
   geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  # Create density heatmap
   stat_density_2d(
-    data = df.const %>% filter(!is.na(Start_Lat) & !is.na(Start_Lng)),
+    data = const_sample_for_heatmap,
     aes(x = Start_Lng, y = Start_Lat, fill = after_stat(density)),
     geom = "tile", 
     contour = FALSE,
     alpha = 0.7,
-    h = 0.1,  # Bandwidth
-    n = 200   # Resolution
+    h = 0.2,
+    n = 150
   ) +
-  # Set alpha scaling with a minimum threshold
-  scale_alpha_continuous(range = c(0, 0.9), guide = "none") +
-  # Use color scheme matching your leaflet construction map
   scale_fill_gradientn(
     colors = c("yellow", "orange", "red"),
-    name = "Construction\nDensity"
+    name = "Construction\nDensity",
+    na.value = NA,  # Makes low-density areas transparent
+    limits = c(0.001, NA)  # Sets minimum value to show (adjust as needed)
   ) +
-  # Set appropriate boundaries for California
   coord_sf(
     xlim = c(-124.5, -114.5),
     ylim = c(32.5, 42.5)
   ) +
   theme_minimal() +
   labs(
-    title = "Construction Density Heatmap in California (2016-2021)",
+    title = "Construction Density Heatmap in California (2021)",
     x = NULL,
     y = NULL
   ) +
@@ -316,901 +387,729 @@ construction_heatmap <- ggplot() +
     legend.position = "right",
     plot.title = element_text(face = "bold")
   )
-# Display the plot
-print(construction_heatmap)
+
+# Display the heatmaps
+accident_heatmap
+construction_heatmap
 ```
 
+The heatmaps confirm the spatial concentration of both accidents and construction activities in California's major urban areas. The similar patterns suggest a potential relationship, but we need to control for traffic volume differences and establish causality.
 
-## Heatmaps - interactive
+### Urban-Rural Classification
 
+We classified construction sites as urban or rural based on their intersection with US Census Bureau urban areas. This classification is crucial for our heterogeneity analysis.
 
-```{r Interactive Maps I}
-# For interactive maps (often better for large datasets)
-# Accidents map
-accident_map <- leaflet() %>%
-  addTiles() %>%
-  addHeatmap(data = df.acc.sf, 
-             intensity = ~1,
-             radius = 8, 
-             blur = 10) %>%
-  setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>% # Center to CA
-  setMaxBounds(lng1 = -124.6, lat1 = 42.0,    # Northwest corner of CA
-               lng2 = -114.1, lat2 = 32.5)    # Southeast corner of CA
+```{r urban_rural}
+# Download urban areas for California
+ca_urban_areas <- tigris::urban_areas(cb = TRUE, year = 2019) %>%
+  st_transform(st_crs(df.const.sf)) %>%
+  filter(grepl(", CA$", NAME10))
 
-# Display maps
-accident_map
-```
-
-
-```{r Interactive Maps II}
-# Construction sites map with California focus and bounds constraints
-construction_map <- leaflet() %>%
-  addTiles() %>%
-  addHeatmap(data = df.const.sf, 
-             intensity = ~1,
-             radius = 8, 
-             blur = 10,
-             gradient = c("yellow", "orange", "red")) %>%
-  setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%  # Center on California
-  setMaxBounds(lng1 = -124.6, lat1 = 42.0,    # Northwest corner of CA
-               lng2 = -114.1, lat2 = 32.5)    # Southeast corner of CA
-
-# Display the map
-construction_map
-```
-
-
-We construct construction sites now also as line objects since they have a start and end point
-
-```{r Construction linestrings}
-# Convert construction data to linestring sf object
-df.const.lines <- df.const %>%
-  filter(!is.na(Start_Lat) & !is.na(Start_Lng) & !is.na(End_Lat) & !is.na(End_Lng)) %>%
-  mutate(geometry = pmap(list(Start_Lng, Start_Lat, End_Lng, End_Lat), 
-                         function(start_lng, start_lat, end_lng, end_lat) {
-                           coords <- matrix(c(start_lng, start_lat, 
-                                             end_lng, end_lat), 
-                                           ncol = 2, byrow = TRUE)
-                           st_linestring(coords)
-                         })) %>%
-  st_sf(crs = 4326)
-```
-
-
-## Spatial operations in PostgreSQL
-
-Since file sizes are so large and Spatial operations in R incredibly slow, we retreat to a PostgreSQL database for the following operations (PostGIS also uses the SF framework, thus R are almost identical to the following SQL functions used).
-
-```{r DB ops}
-# Create a connection to your PostgreSQL database
-con <- dbConnect(
-  Postgres(),
-  dbname = "geospatial_final",
-  host = "localhost",
-  port = 5432,
-  # Uncomment and add your credentials if needed
-  user = "postgres",
-  password = Sys.getenv("POSTGRES_PWD")
+# Classify construction sites as urban or rural
+const_urban <- st_join(
+  df.const.sf,
+  ca_urban_areas %>% select(urban_name = NAME10),
+  join = st_intersects
 )
 
-# Set connection parameters for performance optimization
-dbExecute(con, "SET work_mem = '128MB'")           # Increase working memory
-dbExecute(con, "SET maintenance_work_mem = '256MB'") # For index creation
-dbExecute(con, "SET random_page_cost = 1.1")       # For SSD storage
-dbExecute(con, "SET effective_cache_size = '2GB'") # Estimate of memory available
-dbExecute(con, "SET max_parallel_workers_per_gather = 4") # Use multiple cores
+const_urban <- const_urban %>%
+  mutate(is_urban = !is.na(urban_name))
+```
 
-# Check if PostGIS extension is enabled
-postgis_check <- dbGetQuery(con, "SELECT PostGIS_version()")
-cat("PostGIS version:", postgis_check[[1]], "\n")
+```{r urban_rural_table}
+# Calculate actual urban-rural distribution
+urban_rural_df <- const_urban %>%
+  st_drop_geometry() %>%
+  count(is_urban) %>%
+  mutate(percentage = n / sum(n) * 100)
 
-# Check if SRID 3310 is available and add if not
-dbExecute(con, "
-  DO $$
-  BEGIN
-    IF NOT EXISTS (SELECT 1 FROM spatial_ref_sys WHERE srid = 3310) THEN
-      INSERT INTO spatial_ref_sys (srid, auth_name, auth_srid, proj4text, srtext)
-      VALUES (3310, 'EPSG', 3310, 
-      '+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +x_0=0 +y_0=-4000000 +datum=NAD83 +units=m +no_defs',
-      'PROJCS[\"NAD83 / California Albers\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.01745329251994328,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Albers_Conic_Equal_Area\"],PARAMETER[\"standard_parallel_1\",34],PARAMETER[\"standard_parallel_2\",40.5],PARAMETER[\"latitude_of_center\",0],PARAMETER[\"longitude_of_center\",-120],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",-4000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AUTHORITY[\"EPSG\",\"3310\"]]');
-    END IF;
-  END
-  $$;
-")
+kableExtra::kable(urban_rural_df, 
+                 col.names = c("Urban Area", "Count", "Percentage (%)"),
+                 caption = "Distribution of Construction Sites by Urban/Rural Classification",
+                 booktabs = TRUE,
+                 digits = 1) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"),
+                           full_width = FALSE) %>%
+  kableExtra::row_spec(0, bold = TRUE)
+```
 
-# Check if tables exist and only create them if they don't
-# Begin transaction for data processing
-dbExecute(con, "BEGIN")
+Our analysis of the urban-rural breakdown is critical for understanding the heterogeneous effects of construction on accident rates.
 
-# Check if accidents table exists, if not create it
-has_accidents <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accidents')")$exists
-if (!has_accidents) {
-  # Write accidents data to database
-  sf::st_write(df.acc.sf, con, "accidents", 
-               layer_options = c("GEOM_TYPE=GEOMETRY", 
-                                 "GEOMETRY_NAME=geometry",
-                                 "SRID=4326"))
-  cat("Written accidents data to database\n")
-  
-  # Create spatial index for accidents
-  dbExecute(con, "CREATE INDEX idx_accidents_geometry ON accidents USING GIST(geometry)")
-  dbExecute(con, 'CREATE INDEX idx_accidents_start_time ON accidents("Start_Time");')
-  dbExecute(con, "ANALYZE accidents")
-  cat("Created spatial index for accidents table\n")
-}
+### Integration with Traffic Volume Data
 
-# Check if construction table exists, if not create it
-has_construction <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction')")$exists
+To control for exposure to traffic, we integrated Annual Average Daily Traffic (AADT) data from Caltrans, allowing us to normalize accident counts by traffic volume.
 
-if (!has_construction) {
-  # Write construction data to database
-  sf::st_write(df.const.sf, con, "construction", 
-               layer_options = c("GEOM_TYPE=GEOMETRY", 
-                                 "GEOMETRY_NAME=geometry",
-                                 "SRID=4326"))
-  cat("Written construction data to database\n")
-  
-  # Create spatial index for construction
-  dbExecute(con, "CREATE INDEX idx_construction_geometry ON construction USING GIST(geometry)")
-  dbExecute(con, 'CREATE INDEX idx_construction_start_time ON construction("Start_Time");')
-  dbExecute(con, 'CREATE INDEX idx_construction_end_time ON construction("End_Time");')
-  dbExecute(con, "ANALYZE construction")
-  cat("Created spatial index for construction table\n")
-}
+```{r traffic_volume}
+# Transform AADT data to ensure matching CRS
+aadt_sf <- st_transform(aadt, st_crs(df.const.sf))
 
-# Check if construction table with lines exists, if not create it
-has_construction_lines <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_lines')")$exists
-
-if (!has_construction_lines) {
-  # Write construction data to database
-  sf::st_write(df.const.lines, con, "construction_lines", 
-               layer_options = c("GEOM_TYPE=GEOMETRY", 
-                                 "GEOMETRY_NAME=geometry",
-                                 "SRID=4326"))
-  cat("Written construction_lines data to database\n")
-  
-  # Create spatial index for construction
-  dbExecute(con, "CREATE INDEX idx_construction_lines_geometry ON construction_lines USING GIST(geometry)")
-  dbExecute(con, 'CREATE INDEX idx_construction_lines_start_time ON construction_lines("Start_Time");')
-  dbExecute(con, 'CREATE INDEX idx_construction_lines_end_time ON construction_lines("End_Time");')
-  dbExecute(con, "ANALYZE construction_lines")
-  cat("Created spatial index for construction_lines table\n")
-}
-
-# Commit transaction for base tables
-dbExecute(con, "COMMIT")
-
-#---------------------------------------------------------------------------
-# STEP 1A: Create enhanced construction buffers table with time ranges
-#---------------------------------------------------------------------------
-has_construction_buffers <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_buffers')")$exists
-if (!has_construction_buffers) {
-  cat("Step 1A: Creating enhanced construction_buffers table with time ranges...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  # Create construction buffers table with appropriate projection and time ranges
-  dbExecute(con, "
-    CREATE TABLE construction_buffers AS
-    SELECT 
-      \"ID\" as construction_id,
-      \"Start_Time\" as start_time,
-      \"End_Time\" as end_time,
-      ST_Transform(
-        ST_Buffer(
-          ST_Transform(geometry, 3310), -- Transform to California Albers for accurate distance
-          300                           -- 300 meters buffer
-        ), 
-        4326                            -- Transform back to WGS 84 for joining
-      ) AS geometry
-    FROM construction
-  ")
-  
-  # Add primary key and spatial index
-  dbExecute(con, "ALTER TABLE construction_buffers ADD PRIMARY KEY (construction_id)")
-  dbExecute(con, "CREATE INDEX idx_construction_buffers_geometry ON construction_buffers USING GIST(geometry)")
-  dbExecute(con, "CREATE INDEX idx_construction_buffers_times ON construction_buffers(start_time, end_time)")
-  dbExecute(con, "ANALYZE construction_buffers")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created enhanced construction_buffers table with spatial index and time ranges\n")
-} else {
-  cat("Construction buffers table already exists, skipping creation\n")
-}
-
-#---------------------------------------------------------------------------
-# STEP 1B: Create spatial matches table (using enhanced pre-computed buffers)
-#---------------------------------------------------------------------------
-has_spatial_matches <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'spatial_matches')")$exists
-if (!has_spatial_matches) {
-  cat("Step 1B: Creating spatial_matches table using enhanced pre-computed buffers...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  # Simplified join using pre-computed buffers with time information
-  dbExecute(con, "
-    CREATE TABLE spatial_matches AS
-    SELECT
-      a.\"ID\" AS accident_id,
-      a.\"Severity\" AS accident_severity,
-      a.\"Start_Time\" AS accident_time,
-      b.construction_id
-    FROM 
-      accidents a
-    JOIN 
-      construction_buffers b ON 
-        ST_Within(a.geometry, b.geometry) AND
-        a.\"Start_Time\" BETWEEN b.start_time AND b.end_time
-  ")
-  
-  # Create indices for efficient join operations in later steps
-  dbExecute(con, "CREATE INDEX idx_spatial_accident ON spatial_matches(accident_id)")
-  dbExecute(con, "CREATE INDEX idx_spatial_construction ON spatial_matches(construction_id)")
-  dbExecute(con, "ANALYZE spatial_matches")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created spatial_matches table with combined temporal and spatial filtering\n")
-} else {
-  cat("Spatial matches table already exists, skipping creation\n")
-}
-
-#---------------------------------------------------------------------------
-# STEP 2: Count construction sites per accident (unchanged)
-#---------------------------------------------------------------------------
-has_construction_counts <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_counts')")$exists
-if (!has_construction_counts) {
-  cat("Step 2: Creating construction_counts table...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  dbExecute(con, "
-    CREATE TABLE construction_counts AS
-    SELECT
-      accident_id,
-      COUNT(*) AS nearby_construction_count
-    FROM 
-      spatial_matches
-    GROUP BY
-      accident_id
-  ")
-  
-  # Create index for efficient joins in the final step
-  dbExecute(con, "CREATE INDEX idx_construction_counts_accident ON construction_counts(accident_id)")
-  dbExecute(con, "ANALYZE construction_counts")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created construction_counts table\n")
-} else {
-  cat("Construction counts table already exists, skipping creation\n")
-}
-
-#---------------------------------------------------------------------------
-# STEP 3: Create final analysis table (unchanged)
-#---------------------------------------------------------------------------
-has_accident_construction_analysis <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accident_construction_analysis')")$exists
-if (!has_accident_construction_analysis) {
-  cat("Step 3: Creating final accident_construction_analysis table...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  dbExecute(con, "
-    CREATE TABLE accident_construction_analysis AS
-    WITH ranked_matches AS (
-      SELECT
-        sm.accident_id,
-        sm.construction_id,
-        sm.accident_severity,
-        sm.accident_time,
-        cc.nearby_construction_count,
-        -- Rank construction sites for each accident (random selection if multiple)
-        ROW_NUMBER() OVER (
-          PARTITION BY sm.accident_id
-          ORDER BY RANDOM()  -- Random selection ensures unbiased assignment
-        ) AS rank
-      FROM 
-        spatial_matches sm
-      JOIN
-        construction_counts cc ON sm.accident_id = cc.accident_id
-    )
-    SELECT 
-      accident_id,
-      construction_id,
-      'LINE' AS construction_type,  -- Indicates we're working with line geometries only
-      accident_severity,            -- For severity analysis
-      accident_time,                -- For temporal analysis
-      1 AS temporal_overlap,        -- Always 1 due to our temporal filter in Step 1
-      nearby_construction_count,    -- Number of construction sites affecting this accident
-      1 AS is_near_active_construction  -- Always 1 due to our filtering steps
-    FROM 
-      ranked_matches
-    WHERE 
-      rank = 1  -- Select only one construction site per accident
-  ")
-  
-  # Create indices for query optimization
-  dbExecute(con, "CREATE INDEX idx_aca_accident_id ON accident_construction_analysis(accident_id)")
-  dbExecute(con, "CREATE INDEX idx_aca_construction_id ON accident_construction_analysis(construction_id)")
-  dbExecute(con, "CREATE INDEX idx_aca_count ON accident_construction_analysis(nearby_construction_count)")
-  dbExecute(con, "ANALYZE accident_construction_analysis")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created accident_construction_analysis table\n")
-} else {
-  cat("Accident construction analysis table already exists, skipping creation\n")
-}
-
-
-# Read the data for construction zones with accident counts (for visualization)
-accidents_per_zone <- st_read(con, query = "
-  WITH construction_accident_counts AS (
-    SELECT 
-      aca.construction_id,
-      COUNT(aca.accident_id) AS accident_count
-    FROM 
-      accident_construction_analysis aca
-    GROUP BY 
-      aca.construction_id
+# Convert AADT columns to numeric
+aadt_sf <- aadt_sf %>%
+  mutate(
+    BACK_AADT_num = as.numeric(as.character(BACK_AADT)),
+    AHEAD_AADT_num = as.numeric(as.character(AHEAD_AADT))
   )
-  SELECT 
-    cl.\"ID\" AS construction_id,
-    cac.accident_count,
-    cl.geometry
-  FROM 
-    construction_lines cl
-  JOIN 
-    construction_accident_counts cac ON cl.\"ID\" = cac.construction_id
-  ORDER BY 
-    cac.accident_count DESC
-")
 
-# Get statistics on construction zones
-cat("Construction zones with accidents:", nrow(accidents_per_zone), "\n")
-cat("Maximum accidents in a single construction zone:", max(accidents_per_zone$accident_count), "\n")
-cat("Average accidents per construction zone:", round(mean(accidents_per_zone$accident_count), 2), "\n")
+# Find the nearest AADT point for each construction buffer
+nearest_indices <- st_nearest_feature(df.const.sf, aadt_sf)
+nearest_distances <- st_distance(df.const.sf, aadt_sf[nearest_indices,], by_element = TRUE)
 
-# Read accidents with their associated construction data
-accidents_with_construction <- st_read(con, query = "
-  SELECT 
-    a.*,
-    CASE WHEN aca.accident_id IS NOT NULL THEN 1 ELSE 0 END AS near_construction,
-    aca.construction_id,
-    aca.nearby_construction_count,
-    aca.construction_type
-  FROM 
-    accidents a
-  LEFT JOIN 
-    accident_construction_analysis aca ON a.\"ID\" = aca.accident_id
-")
+# Create a dataframe with buffer IDs and nearest AADT values
+buffer_aadt <- df.const.sf %>%
+  mutate(buffer_id = paste0("c", row_number())) %>%
+  select(buffer_id) %>%
+  bind_cols(
+    aadt_sf[nearest_indices, ] %>%
+    select(BACK_AADT_num, AHEAD_AADT_num)
+  ) %>%
+  mutate(
+    distance_to_nearest = as.numeric(nearest_distances),
+    traffic_volume = rowMeans(cbind(BACK_AADT_num, AHEAD_AADT_num), na.rm = TRUE)
+  ) %>%
+  st_drop_geometry() %>%
+  select(buffer_id, traffic_volume, distance_to_nearest)
 
-# Get distribution of accident counts by construction density
-construction_density_stats <- dbGetQuery(con, "
-  SELECT 
-    nearby_construction_count,
-    COUNT(*) AS accident_count
-  FROM 
-    accident_construction_analysis
-  GROUP BY 
-    nearby_construction_count
-  ORDER BY 
-    nearby_construction_count
-")
+# Summary of traffic volumes
+summary(buffer_aadt$traffic_volume)
+```
 
-#---------------------------------------------------------------------------
-# Report completion and verify table sizes
-#---------------------------------------------------------------------------
-cat("All tables are ready for analysis\n")
+```{r traffic_distribution}
+# Plot actual traffic volume distribution
+ggplot(buffer_aadt, aes(x = traffic_volume)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "black", alpha = 0.8) +
+  labs(
+    title = "Distribution of Annual Average Daily Traffic (AADT)",
+    x = "Traffic Volume (vehicles per day)",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
 
-print(construction_density_stats)
+# Log-scale for better visualization of the distribution
+ggplot(buffer_aadt, aes(x = traffic_volume)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "black", alpha = 0.8) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Annual Average Daily Traffic (AADT) - Log Scale",
+    x = "Traffic Volume (vehicles per day) - Log Scale",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
 
-# Total accidents summary - for comparison
-total_accidents <- dbGetQuery(con, "SELECT COUNT(*) as count FROM accidents")$count
-accidents_near_construction <- dbGetQuery(con, "SELECT COUNT(*) as count FROM accident_construction_analysis")$count
+The traffic volume distribution shows a pattern likely reflecting the differences between urban and rural areas. Urban areas typically have higher traffic volumes, which could influence both construction planning and accident rates.
 
-cat("Total accidents in dataset:", total_accidents, "\n")
-cat("Accidents near active construction:", accidents_near_construction, "\n")
-cat("Percentage of accidents near active construction: ", 
-    round(accidents_near_construction/total_accidents*100, 2), "%\n")
+## Construction Buffer Analysis
 
+To establish the spatial relationship between accidents and construction activities, we created buffer zones around construction locations and analyzed accidents within these zones.
 
-#---------------------------------------------------------------------------
-# STEP 1A-L: Create construction line buffers table with time ranges
-#---------------------------------------------------------------------------
-has_construction_line_buffers <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_line_buffers')")$exists
-if (!has_construction_line_buffers) {
-  cat("Step 1A-L: Creating construction_line_buffers table with time ranges...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  # Create line-based construction buffers with time information
-  dbExecute(con, "
-    CREATE TABLE construction_line_buffers AS
-    SELECT 
-      \"ID\" as construction_id,
-      \"Start_Time\" as start_time,
-      \"End_Time\" as end_time,
-      ST_Transform(
-        ST_Buffer(
-          ST_Transform(geometry, 3310), -- Transform to California Albers for accurate distance
-          300                           -- 300 meters buffer
-        ), 
-        4326                            -- Transform back to WGS 84 for joining
-      ) AS geometry,
-      ST_Length(ST_Transform(geometry, 3310)) AS segment_length_m -- Length in meters
-    FROM construction_lines
-  ")
-  
-  # Add primary key and spatial index
-  dbExecute(con, "ALTER TABLE construction_line_buffers ADD PRIMARY KEY (construction_id)")
-  dbExecute(con, "CREATE INDEX idx_construction_line_buffers_geometry ON construction_line_buffers USING GIST(geometry)")
-  dbExecute(con, "CREATE INDEX idx_construction_line_buffers_times ON construction_line_buffers(start_time, end_time)")
-  dbExecute(con, "ANALYZE construction_line_buffers")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created construction_line_buffers table with spatial index and time ranges\n")
-} else {
-  cat("Construction line buffers table already exists, skipping creation\n")
-}
+```{r construction_buffers}
+# Create construction buffers (500m)
+const_buffers <- const_urban %>%
+  mutate(buffer_id = paste0("c", row_number())) %>%
+  st_buffer(dist = 500)  # 500m buffer
 
-#---------------------------------------------------------------------------
-# STEP 1B-L: Create spatial matches table for line objects
-#---------------------------------------------------------------------------
-has_line_spatial_matches <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'line_spatial_matches')")$exists
-if (!has_line_spatial_matches) {
-  cat("Step 1B-L: Creating line_spatial_matches table using pre-computed line buffers...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  # Simplified join using pre-computed line buffers with time information
-  dbExecute(con, "
-    CREATE TABLE line_spatial_matches AS
-    SELECT
-      a.\"ID\" AS accident_id,
-      a.\"Severity\" AS accident_severity,
-      a.\"Start_Time\" AS accident_time,
-      b.construction_id,
-      b.segment_length_m
-    FROM 
-      accidents a
-    JOIN 
-      construction_line_buffers b ON 
-        ST_Within(a.geometry, b.geometry) AND
-        a.\"Start_Time\" BETWEEN b.start_time AND b.end_time
-  ")
-  
-  # Create indices for efficient join operations
-  dbExecute(con, "CREATE INDEX idx_line_spatial_accident ON line_spatial_matches(accident_id)")
-  dbExecute(con, "CREATE INDEX idx_line_spatial_construction ON line_spatial_matches(construction_id)")
-  dbExecute(con, "ANALYZE line_spatial_matches")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created line_spatial_matches table with combined temporal and spatial filtering\n")
-} else {
-  cat("Line spatial matches table already exists, skipping creation\n")
-}
-
-#---------------------------------------------------------------------------
-# STEP 2-L: Count construction line sites per accident
-#---------------------------------------------------------------------------
-has_line_construction_counts <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'line_construction_counts')")$exists
-if (!has_line_construction_counts) {
-  cat("Step 2-L: Creating line_construction_counts table...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  dbExecute(con, "
-    CREATE TABLE line_construction_counts AS
-    SELECT
-      accident_id,
-      COUNT(*) AS nearby_line_construction_count
-    FROM 
-      line_spatial_matches
-    GROUP BY
-      accident_id
-  ")
-  
-  # Create index for efficient joins in the final step
-  dbExecute(con, "CREATE INDEX idx_line_construction_counts_accident ON line_construction_counts(accident_id)")
-  dbExecute(con, "ANALYZE line_construction_counts")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created line_construction_counts table\n")
-} else {
-  cat("Line construction counts table already exists, skipping creation\n")
-}
-
-#---------------------------------------------------------------------------
-# STEP 3-L: Create final line-based analysis table
-#---------------------------------------------------------------------------
-has_line_accident_construction_analysis <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'line_accident_construction_analysis')")$exists
-if (!has_line_accident_construction_analysis) {
-  cat("Step 3-L: Creating final line_accident_construction_analysis table...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  dbExecute(con, "
-    CREATE TABLE line_accident_construction_analysis AS
-    WITH ranked_matches AS (
-      SELECT
-        sm.accident_id,
-        sm.construction_id,
-        sm.accident_severity,
-        sm.accident_time,
-        sm.segment_length_m,
-        cc.nearby_line_construction_count,
-        -- Rank construction sites for each accident (random selection if multiple)
-        ROW_NUMBER() OVER (
-          PARTITION BY sm.accident_id
-          ORDER BY RANDOM()  -- Random selection ensures unbiased assignment
-        ) AS rank
-      FROM 
-        line_spatial_matches sm
-      JOIN
-        line_construction_counts cc ON sm.accident_id = cc.accident_id
-    )
-    SELECT 
-      accident_id,
-      construction_id,
-      accident_severity,
-      accident_time,
-      segment_length_m,
-      nearby_line_construction_count,
-      1 AS temporal_overlap,           -- Always 1 due to our temporal filter in Step 1
-      1 AS is_near_active_construction -- Always 1 due to our filtering steps
-    FROM 
-      ranked_matches
-    WHERE 
-      rank = 1  -- Select only one construction site per accident
-  ")
-  
-  # Create indices for query optimization
-  dbExecute(con, "CREATE INDEX idx_laca_accident_id ON line_accident_construction_analysis(accident_id)")
-  dbExecute(con, "CREATE INDEX idx_laca_construction_id ON line_accident_construction_analysis(construction_id)")
-  dbExecute(con, "CREATE INDEX idx_laca_count ON line_accident_construction_analysis(nearby_line_construction_count)")
-  dbExecute(con, "ANALYZE line_accident_construction_analysis")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created line_accident_construction_analysis table\n")
-} else {
-  cat("Line accident construction analysis table already exists, skipping creation\n")
-}
-
-#---------------------------------------------------------------------------
-# STEP 4-L: Calculate accident rates by segment length
-#---------------------------------------------------------------------------
-has_accident_rates <- dbGetQuery(con, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'construction_segment_accident_rates')")$exists
-if (!has_accident_rates) {
-  cat("Step 4-L: Creating construction_segment_accident_rates table...\n")
-  
-  dbExecute(con, "BEGIN")
-  
-  dbExecute(con, "
-    CREATE TABLE construction_segment_accident_rates AS
-    SELECT 
-      cl.\"ID\" AS construction_id,
-      cl.geometry,
-      COUNT(laca.accident_id) AS accident_count,
-      MAX(laca.segment_length_m) AS segment_length_m,
-      COUNT(laca.accident_id) / (MAX(laca.segment_length_m) / 1000.0) AS accidents_per_km
-    FROM 
-      construction_lines cl
-    LEFT JOIN 
-      line_accident_construction_analysis laca ON cl.\"ID\" = laca.construction_id
-    GROUP BY 
-      cl.\"ID\", cl.geometry
-  ")
-  
-  # Create spatial index
-  dbExecute(con, "CREATE INDEX idx_accident_rates_geometry ON construction_segment_accident_rates USING GIST(geometry)")
-  dbExecute(con, "ANALYZE construction_segment_accident_rates")
-  
-  dbExecute(con, "COMMIT")
-  cat("Created construction_segment_accident_rates table\n")
-} else {
-  cat("Construction segment accident rates table already exists, skipping creation\n")
-}
-
-# Read accident rates by construction segment
-accident_rates_by_segment <- st_read(con, query = "
-  SELECT 
-    construction_id,
-    accident_count,
-    segment_length_m,
-    accidents_per_km,
-    geometry
-  FROM 
-    construction_segment_accident_rates
-  WHERE 
-    segment_length_m > 0  -- Avoid division by zero
-  ORDER BY 
-    accidents_per_km DESC
-")
-
-# Display summary statistics
-cat("Construction segments analyzed:", nrow(accident_rates_by_segment), "\n")
-cat("Maximum accidents per km:", max(accident_rates_by_segment$accidents_per_km, na.rm = TRUE), "\n")
-cat("Average accidents per km:", mean(accident_rates_by_segment$accidents_per_km, na.rm = TRUE), "\n")
-cat("Median segment length (m):", median(accident_rates_by_segment$segment_length_m, na.rm = TRUE), "\n")
-
-# Severity analysis near line construction
-severity_by_construction <- dbGetQuery(con, "
-  SELECT 
-    laca.accident_severity, 
-    COUNT(*) AS count
-  FROM 
-    line_accident_construction_analysis laca
-  GROUP BY 
-    laca.accident_severity
-  ORDER BY 
-    laca.accident_severity
-")
-
-# Comparison of accident severity near vs. away from construction
-severity_comparison <- dbGetQuery(con, "
-  WITH construction_accidents AS (
-    SELECT 
-      a.\"ID\", 
-      a.\"Severity\", 
-      'Near construction' AS location
-    FROM 
-      accidents a
-    JOIN 
-      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
-  ),
-  non_construction_accidents AS (
-    SELECT 
-      a.\"ID\", 
-      a.\"Severity\", 
-      'Away from construction' AS location
-    FROM 
-      accidents a
-    LEFT JOIN 
-      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
-    WHERE 
-      laca.accident_id IS NULL
+# Add buffer metadata
+const_buffers <- const_buffers %>%
+  mutate(
+    start_date = as.Date(Start_Time),
+    end_date = as.Date(End_Time),
+    construction_duration = as.numeric(difftime(end_date, start_date, units = "days"))
   )
-  SELECT 
-    \"Severity\", 
-    location, 
-    COUNT(*) AS count
-  FROM (
-    SELECT * FROM construction_accidents
-    UNION ALL
-    SELECT * FROM non_construction_accidents
-  ) combined
-  GROUP BY 
-    \"Severity\", location
-  ORDER BY 
-    \"Severity\", location
-")
 
-# Time-based analysis
-temporal_analysis <- dbGetQuery(con, "
-  SELECT 
-    DATE_TRUNC('month', laca.accident_time) AS month,
-    COUNT(*) AS accident_count
-  FROM 
-    line_accident_construction_analysis laca
-  GROUP BY 
-    DATE_TRUNC('month', laca.accident_time)
-  ORDER BY 
-    month
-")
-
-# Disconnect from database
-dbDisconnect(con)
-```
-
-## Buffer zone analysis
-
-In theory, the commented code below would achieve the same as our operation PostGIS but way slower. We will not run it here, but keep it to demonstrate that we could implement in R as well.
-
-```{r Buffer Zone Analysis}
-# Set up parallel processing
-#future::plan(future::multisession, workers = parallel::detectCores() - 1)
-
-# Set sf to use parallel processing
-#sf_use_s2(FALSE)  # Disable S2 spherical geometry
-#cores <- parallel::detectCores() - 1
-
-# Process each dataset with batching
-#cat("Creating point buffers...\n")
-#const_buffers <- create_buffers_in_batches(df.const.sf, buffer_dist = 1000, batch_size = 500)
-
-# Compute accidents within construction zones
-#accidents_in_construction <- df.acc.sf %>%
-#  st_join(const_buffers, join = st_within, prepared = TRUE)
-
-# Return to sequential processing
-#future::plan(future::sequential)
-#sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
-
-# Count accidents per construction zone
-#accidents_per_zone <- accidents_with_construction %>%
-#  group_by(ID) %>%  # Grouping by the ID column
-#  summarize(accident_count = n())
-
-accidents_per_zone <- accidents_per_zone %>% drop_na()
-
-# Visualize construction zones with accident counts
-# First, store our plot in a variable
-accident_zones_plot <- ggplot() +
-  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  # Arrange data in descending order so high frequency zones are plotted on top
-  geom_sf(data = accidents_per_zone %>% arrange(accident_count), 
-          aes(color = accident_count), size = 1.5) +
-  scale_color_viridis_c() +
-  theme_minimal() +
-  labs(title = "Accident Counts within Construction Zones (2021)")
-
-print(accident_zones_plot)
-
-# Then save it using ggsave
-ggsave(filename = "imgs/accident_counts_construction_zones.png", 
-       plot = accident_zones_plot,
-       width = 10, # width in inches
-       height = 8, # height in inches
-       dpi = 300)  # resolution
-```
-
-## Advanced construction sit analysis (line objects): 
-
-```{r Maps with Construction Lines - static}
-# Static map with construction line segments
-ggplot() +
-  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  geom_sf(data = df.const.lines %>% filter(State == "CA"), 
-          color = "orange", size = 1) +
-  theme_minimal() +
-  labs(title = "US Construction Segments (2021)")
-```
-
-```{r Maps with Construction Lines - dynamic}
-# Interactive map with construction segments focused on California
-construction_segment_map <- leaflet() %>%
-  addTiles() %>%
-  addPolylines(data = df.const.lines, 
-               color = "orange",
-               weight = 3,
-               opacity = 0.7,
-               popup = ~paste("ID:", ID, "<br>Duration:", duration)) %>%
-  setView(lng = -119.4179, lat = 36.7783, zoom = 6) %>%  # Center on California
-  setMaxBounds(lng1 = -124.6, lat1 = 42.0,    # Northwest corner of CA
-               lng2 = -114.1, lat2 = 32.5)    # Southeast corner of CA
-               
-# Display the map
-construction_segment_map
-```
-
-Again, we execute computationally heavy operations in PostGIS but have the commented R code below to showcase a theoretical, but slow implementatiojn in R.
-
-```{r Construction Impact Analysis with Buffers}
-# Set up parallel processing
-#future::plan(future::multisession, workers = parallel::detectCores() - 1)
-
-# Set sf to use parallel processing
-#f_use_s2(FALSE)  # Disable S2 spherical geometry
-#cores <- parallel::detectCores() - 1
-
-#cat("Creating line segment buffers...\n")
-#const_segment_buffers <- create_buffers_in_batches(df.const.lines, buffer_dist = 1000, batch_size = 250)
-
-# Find accidents near construction segments
-#accidents_near_construction <- df.acc.sf %>%
-#  st_join(const_segment_buffers, join = st_intersects, prepared = TRUE)
-
-# Return to sequential processing
-#future::plan(future::sequential)
-#sf_use_s2(TRUE)  # Re-enable S2 spherical geometry
-
-# Analyze accident rate per construction segment length
-#accidents_per_segment <- accidents_near_construction %>%
-#  group_by(ID) %>%  # Assuming there's an ID column for construction segments
-#  summarize(
-#    accident_count = n(),
-#    segment_length = as.numeric(st_length(geometry[1])),  # Length in meters
-#    accidents_per_km = accident_count / (segment_length/1000)
-#  )
-
-# Visualize segments by accident rate
-ggplot() +
-  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
-  geom_sf(data = accident_rates_by_segment, aes(color = accidents_per_km), size = 1.5) +
-  scale_color_viridis_c() +
-  theme_minimal() +
-  labs(title = "Accident Rate per Construction Segment (2016-2021)",
-       color = "Accidents/km")
-```
-
-
-```{r}
-# Reestablish connection to PostgreSQL database
-con <- dbConnect(
-  Postgres(),
-  dbname = "geospatial_final",
-  host = "localhost",
-  port = 5432,
-  user = "postgres",
-  password = Sys.getenv("POSTGRES_PWD")
+# Join accidents to construction buffers - this operation can be computationally intensive
+# For very large datasets, consider using a spatial database or partitioning the data
+accidents_in_buffers <- st_join(
+  df.acc.sf %>% 
+    select(accident_id = ID, accident_date = Start_Time, Severity),
+  const_buffers %>% 
+    select(buffer_id, construction_id = ID, start_date, end_date, is_urban),
+  join = st_intersects
 )
 
-# Temporal analysis - construction impact over time
-accidents_by_time <- dbGetQuery(con, "
-  SELECT 
-    DATE_TRUNC('month', accident_time) AS month,
-    COUNT(*) AS accident_count
-  FROM 
-    line_accident_construction_analysis
-  GROUP BY 
-    DATE_TRUNC('month', accident_time)
-  ORDER BY 
-    month
-") %>%
-  mutate(month = as.Date(month))  # Convert PostgreSQL timestamp to R Date
-
-# Get severity comparison data
-severity_comparison <- dbGetQuery(con, "
-  WITH construction_accidents AS (
-    SELECT 
-      a.\"Severity\", 
-      'Near construction' AS location
-    FROM 
-      accidents a
-    JOIN 
-      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
-  ),
-  non_construction_accidents AS (
-    SELECT 
-      a.\"Severity\", 
-      'Away from construction' AS location
-    FROM 
-      accidents a
-    LEFT JOIN 
-      line_accident_construction_analysis laca ON a.\"ID\" = laca.accident_id
-    WHERE 
-      laca.accident_id IS NULL
+# Classify accidents by timing relative to construction
+accidents_in_buffers <- accidents_in_buffers %>%
+  mutate(
+    accident_date = as.Date(accident_date),
+    time_period = case_when(
+      is.na(start_date) ~ NA_character_,
+      accident_date < start_date ~ "before",
+      accident_date > end_date ~ "after",
+      TRUE ~ "during"
+    ),
+    month_year = floor_date(accident_date, "month")
   )
-  SELECT 
-    \"Severity\", 
-    location, 
-    COUNT(*) AS count
-  FROM (
-    SELECT * FROM construction_accidents
-    UNION ALL
-    SELECT * FROM non_construction_accidents
-  ) combined
-  GROUP BY 
-    \"Severity\", location
-  ORDER BY 
-    \"Severity\", location
-")
 
-# Disconnect from database
-dbDisconnect(con)
+# Display the first few rows of the joined data
+head(accidents_in_buffers %>% st_drop_geometry())
 ```
 
+```{r period_counts_table}
+# Count accidents by construction period from actual data
+period_df <- accidents_in_buffers %>%
+  st_drop_geometry() %>%
+  filter(!is.na(time_period)) %>%
+  count(time_period) %>%
+  mutate(percentage = n / sum(n) * 100)
 
-```{r Temporal Analysis and Severity Comparison with Buffers}
-# Visualize temporal analysis
-ggplot(accidents_by_time, aes(x = month, y = accident_count)) +
-  geom_line() +
-  geom_point() +
-  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Accidents Near Construction Over Time",
-       x = "Month",
-       y = "Accident Count")
-
-# Visualize severity comparison
-ggplot(severity_comparison, aes(x = Severity, y = count, fill = location)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  scale_fill_brewer(palette = "Set1") +
-  theme_minimal() +
-  labs(title = "Accident Severity: Near vs. Away from Construction",
-       x = "Severity Level",
-       y = "Count",
-       fill = "Location")
+kableExtra::kable(period_df, 
+                 col.names = c("Construction Period", "Count", "Percentage (%)"),
+                 caption = "Distribution of Accidents by Construction Period",
+                 booktabs = TRUE,
+                 digits = 1) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"),
+                           full_width = FALSE) %>%
+  kableExtra::row_spec(0, bold = TRUE)
 ```
 
+When examining accidents by their timing relative to construction, this distribution provides initial evidence that construction activities may impact accident patterns, but we need more rigorous analysis to establish causality.
 
+```{r buffer_visualization}
+# Extract LA area data for visualization
+la_bbox <- st_bbox(c(xmin = -118.75, ymin = 33.65, xmax = -117.85, ymax = 34.35), crs = st_crs(4326))
+la_bbox_sf <- st_as_sfc(la_bbox)
 
+# Filter construction buffers and accidents for LA area
+la_buffers <- const_buffers %>%
+  st_transform(4326) %>%
+  st_filter(la_bbox_sf)
+
+# Sample if there are too many for visualization
+if(nrow(la_buffers) > 50) {
+  set.seed(123)
+  la_buffers <- la_buffers %>% sample_n(50)
+}
+
+la_accidents <- df.acc.sf %>%
+  st_transform(4326) %>%
+  st_filter(la_bbox_sf)
+
+# Sample if there are too many for visualization
+if(nrow(la_accidents) > 500) {
+  set.seed(123)
+  la_accidents <- la_accidents %>% sample_n(500)
+}
+
+# Create LA outline
+la_outline_sf <- st_as_sf(st_as_sfc(la_bbox))
+
+# Plot
+ggplot() +
+  geom_sf(data = ca_roads, color = "gray80", size = 0.1) +
+  geom_sf(data = la_buffers, fill = "red", alpha = 0.3, color = "red") +
+  geom_sf(data = st_centroid(la_buffers), color = "darkred", size = 2) +
+  geom_sf(data = la_accidents, color = "blue", size = 1, alpha = 0.6) +
+  labs(
+    title = "Construction Buffers and Accidents in Los Angeles Area",
+    subtitle = "Red areas: 500m construction buffers, Blue points: accidents"
+  ) +
+  coord_sf(
+    xlim = c(-118.75, -117.85), 
+    ylim = c(33.65, 34.35)
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+```
+
+The visualization illustrates the spatial relationship between construction buffers (red areas) and accident locations (blue points). Many accidents occur within or near construction zones, suggesting a potential spatial correlation.
+
+## Methodology
+
+Our analysis employs a difference-in-differences (DiD) framework augmented with spatial controls to identify the causal impact of construction activities on traffic accidents. This approach allows us to address potential endogeneity concerns by controlling for time-invariant location characteristics and time-specific effects.
+
+### Panel Dataset Construction
+
+We created a panel dataset that tracks accidents in each buffer zone over time, with indicators for pre-construction, during-construction, and post-construction periods.
+
+```{r panel_creation}
+# Generate all buffer-month combinations
+all_months <- seq(as.Date("2021-01-01"), as.Date("2021-12-01"), by = "month")
+panel_grid <- expand_grid(
+  buffer_id = unique(const_buffers$buffer_id),
+  month = all_months
+)
+
+# Join buffer characteristics
+panel_grid <- panel_grid %>%
+  left_join(
+    const_buffers %>%
+      st_drop_geometry() %>%
+      select(buffer_id, construction_id = ID, start_date, end_date, is_urban),
+    by = "buffer_id"
+  )
+
+# Create treatment indicator
+panel_grid <- panel_grid %>%
+  mutate(
+    treatment = month >= start_date & month <= end_date,
+    post_treatment = month > end_date
+  )
+
+# Count accidents by buffer and month
+monthly_accidents <- accidents_in_buffers %>%
+  st_drop_geometry() %>%
+  mutate(month = floor_date(accident_date, "month")) %>%
+  count(buffer_id, month) %>%
+  rename(accident_count = n)
+
+# Join accident counts to panel
+panel_data <- panel_grid %>%
+  left_join(monthly_accidents, by = c("buffer_id", "month")) %>%
+  replace_na(list(accident_count = 0))
+
+# Join traffic volume data
+panel_data <- panel_data %>%
+  left_join(buffer_aadt, by = "buffer_id")
+
+# Create normalized accident rate
+panel_data <- panel_data %>%
+  mutate(
+    accident_rate = ifelse(traffic_volume > 0, 
+                          accident_count / traffic_volume * 10000,  # Per 10,000 vehicles
+                          NA)
+  )
+
+# Display the first few rows of the panel data
+head(panel_data)
+```
+
+### Econometric Models
+
+We implemented several model specifications to ensure robustness and to explore heterogeneity in the effects:
+
+#### Base Difference-in-Differences Model
+
+Our baseline model takes the form:
+
+$$accident\_count_{it} = \alpha + \beta_1 treatment_{it} + \gamma_t + \delta_i + \varepsilon_{it}$$
+
+Where:
+- $accident\_count_{it}$ is the number of accidents in buffer $i$ at time $t$
+- $treatment_{it}$ is a binary indicator for active construction
+- $\gamma_t$ represents time fixed effects
+- $\delta_i$ represents location fixed effects
+- $\varepsilon_{it}$ is the error term
+
+```{r base_model}
+# Basic DiD model
+did_model <- feols(
+  accident_count ~ treatment | buffer_id + month,
+  data = panel_data
+)
+
+# Display model summary
+summary(did_model)
+```
+
+#### Heterogeneity Analysis
+
+To examine differential effects between urban and rural areas, we extended the base model with an interaction term:
+
+$$accident\_count_{it} = \alpha + \beta_1 treatment_{it} + \beta_2 (treatment_{it} \times urban_i) + \gamma_t + \delta_i + \varepsilon_{it}$$
+
+```{r heterogeneity_model}
+# DiD with urban/rural interaction
+did_urban_model <- feols(
+  accident_count ~ treatment * is_urban | buffer_id + month,
+  data = panel_data %>% filter(!is.na(is_urban))
+)
+
+# Display model summary
+summary(did_urban_model)
+```
+
+Contrary to our initial hypothesis, we found significant heterogeneous effects between urban and rural environments. In urban areas, construction is associated with a more pronounced increase in accident rates (interaction coefficient = 0.163, p < 0.01), while rural areas show a potentially different pattern, suggesting that traffic management challenges differ substantially by environment.
+
+#### Normalized Accident Rate Model
+
+To account for traffic volume differences, we also estimated models using normalized accident rates:
+
+$$accident\_rate_{it} = \alpha + \beta_1 treatment_{it} + \gamma_t + \delta_i + \varepsilon_{it}$$
+
+```{r rate_model}
+# DiD with normalized accident rate
+did_rate_model <- feols(
+  accident_rate ~ treatment | buffer_id + month,
+  data = panel_data %>% filter(!is.na(accident_rate))
+)
+
+# Display model summary
+summary(did_rate_model)
+
+# DiD with urban/rural heterogeneity and normalized rate
+did_rate_urban_model <- feols(
+  accident_rate ~ treatment * is_urban | buffer_id + month,
+  data = panel_data %>% filter(!is.na(accident_rate), !is.na(is_urban))
+)
+
+# Display model summary
+summary(did_rate_urban_model)
+```
+
+#### Spatial Econometric Models
+
+To account for spatial dependence, we implemented spatial lag models:
+
+```{r spatial_models}
+# Create a sample data for spatial analysis (one month snapshot)
+test_month <- as.Date("2021-06-01")
+spdata <- panel_data %>%
+  filter(month == test_month)
+
+# Add spatial coordinates to the panel data
+spdata <- spdata %>%
+  left_join(
+    const_buffers %>%
+      st_centroid() %>%
+      mutate(
+        X = st_coordinates(.)[,1],
+        Y = st_coordinates(.)[,2]
+      ) %>%
+      st_drop_geometry() %>%
+      select(buffer_id, X, Y),
+    by = "buffer_id"
+  )
+
+# Create spatial weights
+spw_coords <- spdata %>%
+  select(X, Y) %>%
+  as.matrix()
+
+# Create spatial weights - might need to adjust distance for your specific data
+sp_nb <- spdep::dnearneigh(spw_coords, d1 = 0, d2 = 5000)
+spw <- spdep::nb2listw(sp_nb, style = "W", zero.policy = TRUE)
+
+# Spatial lag model
+spatial_model <- spatialreg::lagsarlm(
+  accident_count ~ treatment + is_urban + log(traffic_volume + 1),
+  data = spdata,
+  listw = spw,
+  method = "Matrix",
+  zero.policy = TRUE
+)
+
+# Display model summary
+summary(spatial_model)
+```
+
+#### Spatial Spillover Analysis
+
+To examine how construction impacts extend beyond the immediate construction zone, we implemented distance band models:
+
+```{r spillover_model}
+# Create distance bands from construction sites
+panel_data <- panel_data %>%
+  mutate(
+    distance_band = cut(
+      distance_to_nearest,
+      breaks = c(0, 500, 1000, 2000, 5000, Inf),
+      labels = c("0-500m", "500-1000m", "1-2km", "2-5km", ">5km")
+    )
+  )
+
+# Test for spillover effects across distance bands
+spillover_model <- feols(
+  accident_count ~ i(distance_band, treatment, ref = ">5km") | buffer_id + month,
+  data = panel_data %>% filter(!is.na(distance_band))
+)
+
+# Display model summary
+summary(spillover_model)
+```
+
+Our spatial spillover analysis reveals nuanced effects extending beyond the immediate construction zone. Notably, areas 500m to 2km from construction sites demonstrate statistically significant increases in accident rates (coefficients ranging from 0.308 to 0.312, p < 0.001), suggesting that safety management strategies should extend well beyond the immediate construction boundaries.
+
+#### Event Study Analysis
+
+To test for parallel trends and examine dynamic effects, we implemented an event study approach:
+
+```{r event_study}
+# Create relative time variable
+panel_data <- panel_data %>%
+  mutate(
+    rel_time = as.numeric(difftime(month, start_date, units = "days")) / 30,
+    rel_time_cat = cut(rel_time, 
+                       breaks = c(-Inf, -12, -6, -3, 0, 3, 6, 12, Inf),
+                       labels = c("<-12m", "-12to-6m", "-6to-3m", "-3to0m", 
+                                  "0to3m", "3to6m", "6to12m", ">12m"))
+  )
+
+# Event study model
+event_study_model <- feols(
+  accident_count ~ i(rel_time_cat, ref = "-3to0m") | buffer_id + month,
+  data = panel_data %>% filter(!is.na(rel_time_cat))
+)
+
+# Display model summary
+summary(event_study_model)
+```
+
+# Results
+
+## Descriptive Statistics
+
+Our analysis covered a large number of accidents and construction projects across California in 2021. The spatial distribution analysis included the urban-rural breakdown, which is critical for understanding the heterogeneous effects of construction on accident rates.
+
+```{r summary_stats_table}
+# Calculate actual summary statistics
+summary_stats_df <- panel_data %>%
+  filter(!is.na(is_urban)) %>%
+  group_by(treatment, is_urban) %>%
+  summarize(
+    num_observations = n(),
+    mean_accidents = mean(accident_count, na.rm = TRUE),
+    median_accidents = median(accident_count, na.rm = TRUE),
+    max_accidents = max(accident_count, na.rm = TRUE),
+    mean_accident_rate = mean(accident_rate, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+kableExtra::kable(summary_stats_df, 
+                 col.names = c("Construction", "Urban", "Observations", "Mean Accidents", 
+                               "Median Accidents", "Max Accidents", "Mean Accident Rate"),
+                 caption = "Summary Statistics by Treatment Status and Urban/Rural Classification",
+                 booktabs = TRUE,
+                 digits = 3) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                           full_width = TRUE) %>%
+  kableExtra::row_spec(0, bold = TRUE)
+```
+
+The summary statistics reveal important patterns in accident occurrence by construction status and urban/rural setting, providing context for our main regression analyses.
+
+## Difference-in-Differences Results
+
+Table 3 presents the results from our main difference-in-differences models.
+
+```{r did_models_table}
+# Compare DiD models
+did_models_table <- etable(
+  did_model, 
+  did_urban_model, 
+  did_rate_model, 
+  did_rate_urban_model,
+  headers = c("Base", "Urban Het.", "Rate", "Rate Urban"),
+  digits = 3
+)
+
+# Print the comparison table
+print(did_models_table)
+```
+
+The models show how active construction is associated with changes in accident counts, with notable differences between urban and rural areas. The urban heterogeneity model in particular reveals important differential impacts. When examining normalized accident rates (per 10,000 vehicles), the effects may change in magnitude or significance, suggesting traffic volume plays a complex role in the relationship.
+
+## Spatial Lag Model Results
+
+The spatial lag model confirms the presence of significant spatial autocorrelation, indicating that accident patterns exhibit strong spatial clustering. After accounting for this spatial dependence, we can examine construction effects:
+
+```{r spatial_model_table}
+# Extract actual spatial model results
+spatial_sum <- summary(spatial_model)
+
+# Create data frame with model results
+coef_table <- as.data.frame(spatial_sum$Coef)
+rho_row <- data.frame(
+  Estimate = spatial_sum$rho,
+  Std_Error = sqrt(spatial_sum$rho.se),
+  z_value = spatial_sum$rho / sqrt(spatial_sum$rho.se),
+  p_value = 2 * pnorm(abs(spatial_sum$rho / sqrt(spatial_sum$rho.se)), lower.tail = FALSE)
+)
+
+names(rho_row) <- names(coef_table)
+
+# Combine into one table
+spatial_model_df <- rbind(
+  coef_table,
+  rho_row
+)
+
+# Add variable names
+spatial_model_df$Variable <- c(
+  "Intercept", 
+  "Treatment", 
+  "Urban", 
+  "log(Traffic Volume)",
+  "Spatial Lag (ρ)"
+)
+
+# Format p-values
+spatial_model_df$p_value_fmt <- ifelse(
+  spatial_model_df$`Pr(>|z|)` < 0.001, 
+  "<0.001", 
+  sprintf("%.3f", spatial_model_df$`Pr(>|z|)`)
+)
+
+# Select and reorder columns
+spatial_model_df <- spatial_model_df %>%
+  select(Variable, Estimate, `Std. Error` = `Std. Error`, `z value`, `Pr(>|z|)` = p_value_fmt)
+
+kableExtra::kable(spatial_model_df, 
+                 col.names = c("Variable", "Estimate", "Std. Error", "z-value", "p-value"),
+                 caption = "Spatial Lag Model Results",
+                 booktabs = TRUE,
+                 digits = 3) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"),
+                           full_width = FALSE) %>%
+  kableExtra::row_spec(0, bold = TRUE) %>%
+  kableExtra::add_footnote(sprintf("Model statistics: Log likelihood: %.1f, AIC: %.1f", 
+                                  spatial_sum$LL, spatial_sum$AIC), 
+                          notation = "none")
+```
+
+The spatial model confirms the effects of construction on accident counts even after controlling for spatial dependence, providing additional evidence for the relationship.
+
+## Spatial Spillover Effects
+
+Our spillover analysis examined how construction impacts extend to different distance bands from the construction site. Figure 1 presents these results.
+
+```{r spillover_figure, fig.cap="Treatment Effects by Distance from Construction", fig.width=8, fig.height=5}
+# Extract actual spillover model results
+plot_spillover <- coefplot(spillover_model, 
+          drop = "Intercept", 
+          xlab = "Effect on Accident Count", 
+          main = "Treatment Effect by Distance from Construction")
+
+print(plot_spillover)
+```
+
+The spillover analysis reveals a pattern of effects at different distances from construction sites, with particularly notable impacts at specific distances. This suggests that construction effects aren't limited to the immediate construction zone.
+
+## Event Study Results
+
+The event study approach allows us to examine the dynamic effects of construction and test the parallel trends assumption.
+
+```{r event_study_figure, fig.cap="Event Study: Effects Relative to Construction Start", fig.width=8, fig.height=5}
+# Plot event study
+plot_event_study <- coefplot(event_study_model,
+                           xlab = "Time Relative to Construction Start",
+                           ylab = "Effect on Accident Count",
+                           main = "Event Study: Effect of Construction on Accidents")
+
+print(plot_event_study)
+```
+
+The event study results show patterns of accident rates before and after construction begins, providing insights into temporal dynamics and supporting or challenging the parallel trends assumption required for causal interpretation of our DiD results.
+
+## Accident Severity Analysis
+
+We also examined how construction affects accident severity, classified by severity levels.
+
+```{r severity_analysis}
+# Analyze actual accident severity by construction period
+severity_analysis <- accidents_in_buffers %>%
+  st_drop_geometry() %>%
+  filter(!is.na(time_period)) %>%
+  count(time_period, Severity) %>%
+  group_by(time_period) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+
+# Format severity for better display
+severity_analysis <- severity_analysis %>%
+  mutate(
+    Severity_factor = factor(
+      Severity, 
+      levels = sort(unique(Severity)),
+      labels = c("Slight", "Moderate", "Serious", "Fatal")[1:length(unique(Severity))]
+    )
+  )
+
+# Display severity distribution
+kable(
+  severity_analysis %>%
+    select(time_period, Severity, n, proportion) %>%
+    mutate(proportion = proportion * 100) %>%
+    arrange(time_period, Severity),
+  col.names = c("Construction Period", "Severity Level", "Count", "Percentage (%)"),
+  caption = "Distribution of Accident Severity by Construction Period",
+  digits = 1
+)
+```
+
+```{r severity_figure, fig.cap="Accident Severity by Construction Period", fig.width=8, fig.height=5}
+# Visualize accident severity distribution
+ggplot(severity_analysis, aes(x = time_period, y = proportion, fill = Severity_factor)) +
+  geom_col() +
+  scale_fill_brewer(palette = "Blues") +
+  labs(
+    title = "Accident Severity Distribution by Construction Period",
+    x = "Relation to Construction",
+    y = "Proportion of Accidents",
+    fill = "Severity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  )
+```
+
+The severity analysis reveals a consistent distribution of accident severity across construction periods. Approximately 87% of accidents are classified as moderate severity, with about 12% categorized as serious. Interestingly, the proportional stability suggests that while construction impacts accident frequency, it does not substantially alter the underlying severity distribution.
+
+# Discussion
+
+## Interpretation of Main Findings
+
+Our analysis provides robust evidence that road construction causally impacts traffic accident rates, with important heterogeneity across urban and rural environments. The main findings can be summarized as follows:
+
+1. **Overall Construction Effect**: Our base difference-in-differences model reveals a statistically significant increase in accident counts during construction periods (coefficient = 0.101, p < 0.001), indicating that road construction activities are associated with approximately 10.1% more accidents compared to non-construction periods..
+
+2. **Urban-Rural Heterogeneity**: The impact of construction on accidents differs substantially between urban and rural environments. In urban areas, construction is generally associated with increased accident counts, while in rural areas, there is evidence of potentially reduced accidents during construction. This heterogeneity may be explained by several factors:
+   - Higher traffic density in urban areas creates more complex interactions around construction zones
+   - Rural construction may induce more cautious driving or effective traffic diversion
+   - Urban construction often involves more complex traffic management challenges
+
+3. **Spatial Spillover Effects**: The spatial spillover analysis shows that construction impacts extend beyond the immediate construction zone, with effects varying by distance. This finding has important implications for traffic management strategies, suggesting that safety measures should extend beyond the construction zone itself to areas where merging and speed adjustment typically occur.
+
+4. **Temporal Dynamics**: The event study results provide insights into accident patterns before, during, and after construction. We observe changes in accident rates during different phases of construction, which may reflect adaptation effects as drivers adjust to changed road conditions.
+
+5. **Severity Patterns**: Our severity analysis shows the distribution of accident severity levels (Slight, Moderate, Serious, Fatal) across different construction periods. This helps us understand whether construction not only affects accident frequency but also severity levels.
+
+## Policy Implications
+
+These findings have several important policy implications for transportation safety planning:
+
+1. **Targeted Resource Allocation**: Traffic management resources should be allocated differentially between urban and rural construction zones, with greater emphasis on urban areas where construction effects on accidents are typically larger.
+
+2. **Extended Safety Zones**: Traffic safety measures should not be limited to the immediate construction zone but should extend to areas surrounding construction sites where our spillover analysis indicates significant effects.
+
+3. **Temporal Planning**: The temporal patterns revealed in our event study suggest that enhanced safety measures may be particularly important during specific phases of construction projects.
+
+4. **Severity-Focused Strategies**: Our severity analysis provides insights for emergency response planning and the design of safety measures aimed at mitigating more severe accidents.
+
+## Limitations and Future Research
+
+While our study provides evidence on the causal impact of construction on accidents, several limitations should be noted:
+
+1. **Time Period**: Our analysis is limited to data from 2021, which may have been affected by pandemic-related traffic patterns. Future research should examine longer time periods and potential yearly variations.
+
+2. **Granularity**: While we distinguish between urban and rural areas, more detailed classifications (e.g., suburban, exurban) could provide additional insights for targeted interventions.
+
+3. **Construction Types**: Our data does not allow us to consistently differentiate between different types of construction activities (e.g., resurfacing, bridge repair, lane expansion), which may have different safety implications.
+
+4. **Weather and Seasonal Effects**: While our models include time fixed effects that partly control for seasonal patterns, more explicit modeling of weather interactions with construction effects could yield valuable insights.
+
+5. **Endogeneity**: Despite our use of a DiD framework, unobserved confounders may still bias our estimates. Future research could explore instrumental variable approaches or quasi-experimental designs to address endogeneity concerns.
+
+6. **AADT data**: The AADT data used for traffic volume normalization may include estimates or projections that do not precisely match the 2021 study period, potentially introducing minor measurement uncertainties."
+
+Future research should address these limitations and further explore the mechanisms underlying the observed heterogeneity in construction effects.
+
+# Conclusion
+
+This study provides evidence on the relationship between road construction and traffic accidents in California. Using high-resolution spatial data and advanced econometric methods, we demonstrate that construction activities significantly impact accident rates, with effects that vary substantially between urban and rural environments and extend beyond the immediate construction zone.
+
+The findings have important implications for transportation safety planning, suggesting the need for targeted resource allocation, extended safety zones, and temporally-focused safety measures. By implementing these recommendations, transportation authorities can better mitigate the safety risks associated with necessary infrastructure maintenance and development.
+
+Our methodological approach combines spatial analysis with causal inference techniques, providing a framework that can be extended to other regions and contexts. By continuing to refine these methods and addressing the limitations noted, future research can further enhance our understanding of the complex relationship between construction activities and traffic safety.
+
+# References
+
+Ahmed, M. M., Franke, R., Ksaibati, K., & Shinstine, D. S. (2018). Effects of truck traffic on crash injury severity on rural highways in Wyoming using Bayesian binary logit models. *Accident Analysis & Prevention*, 117, 106-113.
+
+Li, Y., & Bai, Y. (2008). Comparison of characteristics between fatal and injury accidents in the highway construction zones. *Safety Science*, 46(4), 646-660.
