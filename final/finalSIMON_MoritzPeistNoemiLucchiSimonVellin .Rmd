@@ -347,6 +347,252 @@ construction_map <- leaflet() %>%
 construction_map
 ```
 
+Given the large amount of data, further visual analysis is specific to California and 2021. 
+We start with some basic visualizations of our sampled data, firstly focusing on accidents.
+
+```{r}
+# Plot the accidents 
+accidents <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray50", size = 1.5, linetype = "solid") +
+  geom_sf(data = df.acc.sf, size = 0.2) +
+  scale_color_viridis_c(
+    name = "AADT",
+    option = "plasma",
+    labels = scales::comma) +
+  theme_bw() +
+  labs(title = "Accidents") 
+print(accidents)
+```
+
+
+```{r}
+# Plot accidents by severity 
+accidents_severity <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray50", size = 1.5, linetype = "solid") +
+  geom_sf(data = df.acc.sf, aes(color = Severity), size = 0.2) +
+  scale_color_viridis_c(
+    name = "Severity",
+    option = "plasma",
+    labels = scales::comma) +
+  theme_bw() +
+  labs(title = "Accidents by Severity") 
+print(accidents_severity)
+```
+
+We can observe that most of the accidents are classified as level 2 severity. This suggests that the majority are not highly severe. Given this context, it is reasonable to infer that these accidents may be caused by distractions or disruptions, potentially linked to the presence of construction sites.
+
+
+Now, we shift our focus to construction sites, still concentrating solely on California. Due to the extremely high number of construction sites, many of which last only a few minutes or hours, we decided to exclude those with durations of less than one day. This reduction in the number of construction sites not only improves the clarity of the visualization but also prevents any potential bias in the subsequent analysis. Considering that in afterwards we will implement a 300-meter buffer, including too many short-duration sites would essentially cover all areas with construction buffers, skewing the results.
+
+```{r}
+# Remove constructions that last less than one day
+df.const.sf_filtered <- subset(df.const.sf, duration >= 1)
+```
+
+
+```{r}
+# Plot the construction sites by severity 
+constructions_severity <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray50", size = 1.5, linetype = "solid") +
+  geom_sf(data = df.const.sf_filtered, aes(color = Severity), size = 0.2) +
+  scale_color_viridis_c(
+    name = "AADT",
+    option = "plasma",
+    labels = scales::comma) +
+  theme_bw() +
+  labs(title = "Constructions Sites by Severity") 
+print(constructions_severity)
+```
+
+In the context of construction sites, severity reflects the expected impact on traffic, with a scale ranging from 1 to 4, where 1 represents the least impact. We can observe that the majority of construction sites are expected to have a minimal impact on traffic, with a severity score of 1. However, there are a few sites with a higher severity score, particularly around Los Angeles and Sacramento. This suggests that traffic volume may already be taken into account when calculating the severity of these sites.
+
+```{r}
+constructions_duration <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray50", size = 1.5, linetype = "solid") +
+  geom_sf(data = df.const.sf_filtered, aes(color = duration), size = 0.2) +
+  scale_color_viridis_c(
+    name = "Duration",
+    option = "plasma",
+    labels = scales::comma) +
+  theme_bw() +
+  labs(title = "Constructions Sites by Duration") 
+print(constructions_duration)
+```
+
+Now we combine our data about construction sites and accidents with data about traffic volume, the latter is referred to 2023, and was retrieved from the [U.S. Government's Open Data Website](https://data.gov). Traffic volume data was used to normalize the accident data, as we believed that comparing raw accident figures without accounting for the number of vehicles on the street could lead to biased results. Although the approach of combining different years for different sources of data is not methodologically robust, it helped in serving our purpose with the constraint of availability of data. Additionally, we assumed that the distribution of the kind of data we are analyzing is persistent, and so values are not likely to significantly change in a 2-year period.
+In the aforementioned website, we found data about Annual Average Daily Traffic (AADT), which is the total volume for the year divided by 365 days. The traffic count year runs from October 1st through September 30th. We had information about both back and ahead AADT, as well as back peak hour traffic volume and ahead peak hour traffic volume, referred to the post miles (instead of roads). We average the back and ahead values for every pair of indicators and perform our analysis with both to verify which one could have been more insightful. As expected, the average AADT shows more variability, making it more effective for our normalization purpose.
+
+
+```{r}
+# Define average AADT and average peak traffic volume and substitute original columns 
+traffic_data_aggregated <- df.traf.vol %>%
+  mutate(across(c(BACK_AADT, AHEAD_AADT, BACK_PEAK_, AHEAD_PEAK), 
+                ~as.numeric(as.character(.)))) %>%
+  # Average over back and ahead traffic - both in AADT and peak traffic 
+  mutate(
+    aadt = rowMeans(cbind(AHEAD_AADT, BACK_AADT), na.rm = TRUE),
+    avg_peak_traffic = rowMeans(cbind(BACK_PEAK_, AHEAD_PEAK), na.rm = TRUE)
+  ) %>%
+  # Remove initial columns 
+  select(-c(AHEAD_AADT, BACK_AADT, AHEAD_PEAK, BACK_PEAK_, AHEAD_PE_1, BACK_PEA_1))
+  
+```
+
+
+```{r}
+# Plot average AADT with roads 
+traffic_roads <- ggplot() +
+  geom_sf(data = ca_roads, color = "gray50", size = 1.5, linetype = "solid") +
+  geom_sf(data = traffic_data_aggregated %>% filter(!is.na(aadt)),
+          aes(color = aadt), 
+          size = 0.2) +
+  scale_color_viridis_c(
+    name = "AADT",
+    option = "plasma",
+    labels = scales::comma) +
+  theme_bw() +
+  labs(title = "Annual Average Daily Traffic") 
+print(traffic_roads)
+```
+
+
+As follows we normalize the accidents by the traffic volume. To do so, we first assign each accident to its nearest post miles point and calculate the distance between these two. Secondly, we aggregate the accident data by closest traffic point and calculate the normalized accident rates. For each traffic point, we count the number of accidents and then divide these counts by the average AADT and multiply by 1,000 to get the rate per 1,000 vehicles. 
+
+```{r}
+# Assign each accident to its nearest traffic measurement point 
+normalize_accidents_by_traffic <- function(df.acc.sf, traffic_data_aggregated, buffer_distance = 300) {
+  # Match coordinate systems
+  traffic_data_aggregated <- st_transform(traffic_data_aggregated, st_crs(df.acc.sf))
+  
+  # Find the nearest traffic point for each accident
+  nearest_indices <- st_nearest_feature(df.acc.sf, traffic_data_aggregated)
+  
+  # Calculate distances to each nearest point
+  distances <- st_distance(df.acc.sf, traffic_data_aggregated[nearest_indices,], by_element = TRUE)
+  distances <- as.numeric(distances)
+  
+  # Add traffic data directly to the accidents dataframe
+  df.acc.sf$aadt <- traffic_data_aggregated$aadt[nearest_indices]
+  
+  # Add the traffic point ID to each accident 
+  df.acc.sf$traffic_point_id <- nearest_indices
+  
+  # Flag accidents that fall within the buffer distance
+  df.acc.sf$within_buffer <- distances <= buffer_distance
+  
+  return(df.acc.sf)}
+
+# Apply the function
+df.acc.sf <- normalize_accidents_by_traffic(df.acc.sf, traffic_data_aggregated)
+
+# Count accidents per traffic point and normalize accidents counts
+traffic_point_stats <- df.acc.sf %>%
+  st_drop_geometry() %>%  
+  group_by(traffic_point_id) %>%
+  summarise(
+    accident_count = n(),
+    aadt = first(aadt),  
+    accidents_per_1000_vehicles = (accident_count / aadt) * 1000)
+
+# Create a new spatial object with traffic points and their accident rates
+traffic_points_with_rates <- traffic_data_aggregated %>%
+  mutate(traffic_point_id = row_number()) %>%  
+  left_join(traffic_point_stats, by = "traffic_point_id") %>%
+  mutate(
+    accident_count = replace_na(accident_count, 0),
+    accidents_per_1000_vehicles = replace_na(accidents_per_1000_vehicles,0))
+
+```
+
+
+As expected, the traffic volume does have an impact on accidents, so this normalization step was crucial in order to have robust and reliable results.
+
+```{r}
+# Distribution of accidents by traffic volume
+ggplot(df.acc.sf %>% filter(!is.na(aadt)), 
+       aes(x = aadt)) +
+  geom_histogram(bins = 30, fill = "steelblue") +
+  scale_x_log10() +  
+  theme_minimal() +
+  labs(title = "Accidents by Traffic Volume",
+       x = "Average Daily Traffic Volume (logarithmic scale)",
+       y = "Number of Accidens")
+```
+
+
+
+For further visualizations, we also calculate buffers to verify the intersection between areas close to construction sites and frequency of accidents.
+```{r}
+# Create construction buffers 
+create_construction_buffers <- function(df.const.sf, buffer_distance = 300) {
+  # Ensure proper projection
+  df.const.projected <- st_transform(df.const.sf, 3310)  # California Albers projection
+  
+  # Create buffers
+  construction_buffers <- st_buffer(df.const.projected, dist = buffer_distance)
+  
+  # Transform back to original CRS
+  construction_buffers <- st_transform(construction_buffers, st_crs(df.const.sf))
+  return(construction_buffers)}
+
+# Apply the function 
+construction_buffers <- create_construction_buffers(df.const.sf)
+```
+
+
+Due to memory constraints, the following interactive map has been further filtered to focus solely on Los Angeles. This visualization highlights construction buffers (areas within 300 meters of construction sites) in red, and accidents in blue. We specifically chose Los Angeles for this analysis, as prior visualizations revealed that most accidents and construction sites are concentrated in this region, along with Sacramento. This is to be expected, given the high population density in these areas.
+
+```{r}
+# Define the Los Angeles bounding box
+la_bbox <- list(
+  min_lng = -118.75, max_lng = -117.85,
+  min_lat = 33.65, max_lat = 34.35)
+
+# Filter data for Los Angeles
+la_accidents <- df.acc.sf %>%
+  filter(
+    st_coordinates(.)[,1] >= la_bbox$min_lng,
+    st_coordinates(.)[,1] <= la_bbox$max_lng,
+    st_coordinates(.)[,2] >= la_bbox$min_lat,
+    st_coordinates(.)[,2] <= la_bbox$max_lat)
+
+la_buffers <- construction_buffers %>%
+  st_filter(st_as_sfc(st_bbox(c(
+    xmin = la_bbox$min_lng, xmax = la_bbox$max_lng,
+    ymin = la_bbox$min_lat, ymax = la_bbox$max_lat
+  ), crs = st_crs(construction_buffers))))
+
+# Interactive map for accidents within construction buffers 
+la_buffer_accident_map <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  # Add construction buffers
+  addPolygons(data = la_buffers, 
+              color = "#FF5500", 
+              weight = 2, 
+              opacity = 0.8,
+              fillOpacity = 0.4,
+              group = "Construction Buffers") %>%
+  # Add accidents 
+  addCircles(data = la_accidents,
+             radius = 1.5,  
+             color = "#3388FF",
+             fillColor = "#3388FF",
+             fillOpacity = 0.6,
+             weight = 1,
+             group = "Accidents") %>%
+  # Add layer controls
+  addLayersControl(
+    overlayGroups = c("Construction Buffers", "Accidents"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  # Center on Los Angeles
+  setView(lng = -118.25, lat = 34.05, zoom = 10)
+la_buffer_accident_map
+
+```
+
+
+
 <hr>
 
 
