@@ -8,7 +8,14 @@ This repository contains projects and assignments completed for the Geospatial D
 - **Noemi Lucchi**: [noemi.lucchi@bse.eu](mailto:noemi.lucchi@bse.eu)
 - **Simon Vellin**: [simon.vellin@bse.eu](mailto:simon.vellin@bse.eu)
 
-## Final Project: California Road Construction Safety Analysis
+## TOC
+
+- [Final Project: California Road Construction Safety Analysis](/final/)
+- [Assignment 1: Replication of Geospatial Visualizations](/hw1/)
+- [Assignment 2: World Geography and Airport Accessibility](/hw2/)
+- [Assignment 3: Climate and Transportation Analysis](/hw3/)
+
+## [Final Project: California Road Construction Safety Analysis](/final/)
 
 Our final project investigates the causal relationship between road construction activities and traffic accident rates in California using high-resolution spatial data from 2021. We implement a difference-in-differences framework with spatial controls to analyze how construction zones affect accident frequency and severity, with a focus on heterogeneous effects across urban and rural environments.
 
@@ -34,7 +41,7 @@ Our final project investigates the causal relationship between road construction
 ![Spillover Effects by Distance](/final/imgs/TEConstruction.png)
 *Treatment effects on accident rates by distance from construction zones*
 
-## Assignment 1: Replication of Geospatial Visualizations
+## [Assignment 1: Replication of Geospatial Visualizations](/hw1/)
 
 This assignment focused on replicating geospatial visualizations from five different economic research papers. Each replication demonstrates different spatial data visualization techniques and approaches.
 
@@ -51,7 +58,7 @@ This assignment focused on replicating geospatial visualizations from five diffe
 ![Ethiopian Power Grid and Roads](/hw1/imgs/grid.png)
 *High Voltage Power Grid Network and Major Roads in Ethiopia*
 
-## Assignment 2: World Geography and Airport Accessibility
+## [Assignment 2: World Geography and Airport Accessibility](/hw2/)
 
 This assignment analyzed global population distributions and airport accessibility across continents, combining various data sources from Natural Earth. The second part explored agricultural market data in Africa using the Porteous dataset.
 
@@ -67,7 +74,7 @@ This assignment analyzed global population distributions and airport accessibili
 ![Markets in Africa](/hw2/imgs/markets.png)
 *Distribution of agricultural markets across Africa*
 
-## Assignment 3: Climate and Transportation Analysis
+## [Assignment 3: Climate and Transportation Analysis](/hw3/)
 
 This assignment examined climate trends across US regions and transportation centrality in Spain through two main exercises.
 
